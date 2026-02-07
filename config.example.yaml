@@ -1,0 +1,47 @@
+# MicroClaw configuration
+# Copy this file to config.yaml and fill in the required values.
+
+# Telegram bot token from @BotFather
+telegram_bot_token: ""
+# Bot username without @
+bot_username: ""
+
+# LLM provider (anthropic, openai, openrouter, deepseek, google, etc.)
+llm_provider: "anthropic"
+# API key for LLM provider
+api_key: ""
+# Model name (leave empty for provider default)
+model: ""
+# Custom base URL (optional, null to use provider default)
+# llm_base_url: null
+
+# Max tokens per response
+max_tokens: 8192
+# Max tool loop iterations per message
+max_tool_iterations: 25
+# Chat history context size
+max_history_messages: 50
+# Data directory for database, memory, skills
+data_dir: "./data"
+# IANA timezone for scheduling (e.g. "US/Eastern", "Europe/London")
+timezone: "UTC"
+
+# OpenAI API key for voice transcription via Whisper (optional)
+# openai_api_key: ""
+
+# Session management
+max_session_messages: 40
+compact_keep_recent: 20
+
+# Telegram group allowlist (empty = allow all groups)
+# allowed_groups: []
+
+# WhatsApp Cloud API (optional)
+# whatsapp_access_token: ""
+# whatsapp_phone_number_id: ""
+# whatsapp_verify_token: ""
+# whatsapp_webhook_port: 8080
+
+# Discord (optional)
+# discord_bot_token: ""
+# discord_allowed_channels: []

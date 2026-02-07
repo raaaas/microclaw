@@ -70,6 +70,16 @@ pub async fn run_bot(
         });
     }
 
+    // Start Discord bot if configured
+    if let Some(ref token) = state.config.discord_bot_token {
+        let discord_state = state.clone();
+        let token = token.clone();
+        info!("Starting Discord bot");
+        tokio::spawn(async move {
+            crate::discord::start_discord_bot(discord_state, &token).await;
+        });
+    }
+
     let handler = Update::filter_message().endpoint(handle_message);
 
     Dispatcher::builder(bot, handler)

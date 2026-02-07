@@ -105,6 +105,9 @@ fn grep_recursive(
                     file_count,
                 )?;
             } else if entry_path.is_file() {
+                if crate::tools::path_guard::is_blocked(&entry_path) {
+                    continue;
+                }
                 if let Some(ref pat) = glob_pattern {
                     if !pat.matches(&name) {
                         continue;

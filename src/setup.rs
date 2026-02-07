@@ -18,17 +18,6 @@ use ratatui::DefaultTerminal;
 
 use crate::error::MicroClawError;
 
-const ENV_KEYS: &[&str] = &[
-    "TELEGRAM_BOT_TOKEN",
-    "BOT_USERNAME",
-    "LLM_PROVIDER",
-    "LLM_API_KEY",
-    "LLM_MODEL",
-    "LLM_BASE_URL",
-    "DATA_DIR",
-    "TIMEZONE",
-];
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProviderProtocol {
     Anthropic,
@@ -279,14 +268,19 @@ struct PickerState {
 
 impl SetupApp {
     fn new() -> Self {
-        dotenvy::dotenv().ok();
-        let provider = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "anthropic".into());
+        // Try loading from existing config.yaml first, then fall back to env vars
+        let existing = Self::load_existing_config();
+        let provider = existing
+            .get("LLM_PROVIDER")
+            .cloned()
+            .unwrap_or_else(|| "anthropic".into());
         let default_model = default_model_for_provider(&provider);
         let default_base_url = find_provider_preset(&provider)
             .map(|p| p.default_base_url)
             .unwrap_or("");
-        let llm_api_key = std::env::var("LLM_API_KEY")
-            .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
+        let llm_api_key = existing
+            .get("LLM_API_KEY")
+            .cloned()
             .unwrap_or_default();
 
         Self {
@@ -294,14 +288,14 @@ impl SetupApp {
                 Field {
                     key: "TELEGRAM_BOT_TOKEN",
                     label: "Telegram bot token",
-                    value: std::env::var("TELEGRAM_BOT_TOKEN").unwrap_or_default(),
+                    value: existing.get("TELEGRAM_BOT_TOKEN").cloned().unwrap_or_default(),
                     required: true,
                     secret: true,
                 },
                 Field {
                     key: "BOT_USERNAME",
                     label: "Bot username (without @)",
-                    value: std::env::var("BOT_USERNAME").unwrap_or_default(),
+                    value: existing.get("BOT_USERNAME").cloned().unwrap_or_default(),
                     required: true,
                     secret: false,
                 },
@@ -322,31 +316,28 @@ impl SetupApp {
                 Field {
                     key: "LLM_MODEL",
                     label: "LLM model",
-                    value: std::env::var("LLM_MODEL")
-                        .or_else(|_| std::env::var("CLAUDE_MODEL"))
-                        .unwrap_or_else(|_| default_model.into()),
+                    value: existing.get("LLM_MODEL").cloned().unwrap_or_else(|| default_model.into()),
                     required: false,
                     secret: false,
                 },
                 Field {
                     key: "LLM_BASE_URL",
                     label: "LLM base URL (optional)",
-                    value: std::env::var("LLM_BASE_URL")
-                        .unwrap_or_else(|_| default_base_url.to_string()),
+                    value: existing.get("LLM_BASE_URL").cloned().unwrap_or_else(|| default_base_url.to_string()),
                     required: false,
                     secret: false,
                 },
                 Field {
                     key: "DATA_DIR",
                     label: "Data directory",
-                    value: std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".into()),
+                    value: existing.get("DATA_DIR").cloned().unwrap_or_else(|| "./data".into()),
                     required: false,
                     secret: false,
                 },
                 Field {
                     key: "TIMEZONE",
                     label: "Timezone (IANA)",
-                    value: std::env::var("TIMEZONE").unwrap_or_else(|_| "UTC".into()),
+                    value: existing.get("TIMEZONE").cloned().unwrap_or_else(|| "UTC".into()),
                     required: false,
                     secret: false,
                 },
@@ -361,6 +352,62 @@ impl SetupApp {
             backup_path: None,
             completion_summary: Vec::new(),
         }
+    }
+
+    /// Load existing config values from config.yaml, config.yml, or .env (legacy).
+    fn load_existing_config() -> HashMap<String, String> {
+        // Try config.yaml / config.yml first
+        let yaml_path = if Path::new("./config.yaml").exists() {
+            Some("./config.yaml")
+        } else if Path::new("./config.yml").exists() {
+            Some("./config.yml")
+        } else {
+            None
+        };
+
+        if let Some(path) = yaml_path {
+            if let Ok(content) = fs::read_to_string(path) {
+                if let Ok(config) = serde_yaml::from_str::<crate::config::Config>(&content) {
+                    let mut map = HashMap::new();
+                    map.insert("TELEGRAM_BOT_TOKEN".into(), config.telegram_bot_token);
+                    map.insert("BOT_USERNAME".into(), config.bot_username);
+                    map.insert("LLM_PROVIDER".into(), config.llm_provider);
+                    map.insert("LLM_API_KEY".into(), config.api_key);
+                    if !config.model.is_empty() {
+                        map.insert("LLM_MODEL".into(), config.model);
+                    }
+                    if let Some(url) = config.llm_base_url {
+                        map.insert("LLM_BASE_URL".into(), url);
+                    }
+                    map.insert("DATA_DIR".into(), config.data_dir);
+                    map.insert("TIMEZONE".into(), config.timezone);
+                    return map;
+                }
+            }
+        }
+
+        // Fall back to .env
+        if let Ok(content) = fs::read_to_string(".env") {
+            let mut map = HashMap::new();
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, value)) = trimmed.split_once('=') {
+                    map.insert(key.trim().to_string(), value.trim().to_string());
+                }
+            }
+            // Normalize API key
+            if !map.contains_key("LLM_API_KEY") {
+                if let Some(v) = map.get("ANTHROPIC_API_KEY") {
+                    map.insert("LLM_API_KEY".into(), v.clone());
+                }
+            }
+            return map;
+        }
+
+        HashMap::new()
     }
 
     fn next(&mut self) {
@@ -771,11 +818,10 @@ fn mask_secret(s: &str) -> String {
     format!("{}***{}", &s[..3], &s[s.len() - 2..])
 }
 
-fn save_env_file(
+fn save_config_yaml(
     path: &Path,
     values: &HashMap<String, String>,
 ) -> Result<Option<String>, MicroClawError> {
-    let existing = fs::read_to_string(path).unwrap_or_default();
     let mut backup = None;
     if path.exists() {
         let ts = Utc::now().format("%Y%m%d%H%M%S").to_string();
@@ -784,44 +830,39 @@ fn save_env_file(
         backup = Some(backup_path);
     }
 
-    let mut new_lines = Vec::new();
-    let mut seen = HashMap::<String, bool>::new();
-    for line in existing.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') || !trimmed.contains('=') {
-            new_lines.push(line.to_string());
-            continue;
-        }
-        let key = trimmed
-            .split_once('=')
-            .map(|(k, _)| k.trim().to_string())
-            .unwrap_or_default();
-        if ENV_KEYS.contains(&key.as_str()) {
-            if let Some(v) = values.get(&key) {
-                new_lines.push(format!("{key}={v}"));
-                seen.insert(key, true);
-            } else {
-                new_lines.push(line.to_string());
-            }
-        } else {
-            new_lines.push(line.to_string());
-        }
+    let get = |key: &str| values.get(key).cloned().unwrap_or_default();
+
+    let mut yaml = String::new();
+    yaml.push_str("# MicroClaw configuration\n\n");
+    yaml.push_str("# Telegram bot token from @BotFather\n");
+    yaml.push_str(&format!("telegram_bot_token: \"{}\"\n", get("TELEGRAM_BOT_TOKEN")));
+    yaml.push_str("# Bot username without @\n");
+    yaml.push_str(&format!("bot_username: \"{}\"\n\n", get("BOT_USERNAME")));
+
+    yaml.push_str("# LLM provider (anthropic, openai, openrouter, deepseek, google, etc.)\n");
+    yaml.push_str(&format!("llm_provider: \"{}\"\n", get("LLM_PROVIDER")));
+    yaml.push_str("# API key for LLM provider\n");
+    yaml.push_str(&format!("api_key: \"{}\"\n", get("LLM_API_KEY")));
+
+    let model = get("LLM_MODEL");
+    if !model.is_empty() {
+        yaml.push_str("# Model name (leave empty for provider default)\n");
+        yaml.push_str(&format!("model: \"{}\"\n", model));
     }
 
-    for key in ENV_KEYS {
-        if !seen.contains_key(*key) {
-            if let Some(v) = values.get(*key) {
-                new_lines.push(format!("{key}={v}"));
-            }
-        }
+    let base_url = get("LLM_BASE_URL");
+    if !base_url.is_empty() {
+        yaml.push_str("# Custom base URL (optional)\n");
+        yaml.push_str(&format!("llm_base_url: \"{}\"\n", base_url));
     }
 
-    let out = if new_lines.is_empty() {
-        String::new()
-    } else {
-        format!("{}\n", new_lines.join("\n"))
-    };
-    fs::write(path, out)?;
+    yaml.push('\n');
+    let data_dir = values.get("DATA_DIR").cloned().unwrap_or_else(|| "./data".into());
+    yaml.push_str(&format!("data_dir: \"{}\"\n", data_dir));
+    let tz = values.get("TIMEZONE").cloned().unwrap_or_else(|| "UTC".into());
+    yaml.push_str(&format!("timezone: \"{}\"\n", tz));
+
+    fs::write(path, yaml)?;
     Ok(backup)
 }
 
@@ -956,7 +997,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, app: &SetupApp) {
         Line::from("• ←/→ on provider/model: quick rotate presets"),
         Line::from("• e: force manual text edit"),
         Line::from("• F2: validate + online checks"),
-        Line::from("• s or Ctrl+S: save to .env"),
+        Line::from("• s or Ctrl+S: save to config.yaml"),
     ])
     .block(
         Block::default()
@@ -1026,13 +1067,13 @@ fn try_save(app: &mut SetupApp) {
         .and_then(|_| app.validate_online())
         .and_then(|checks| {
             let values = app.to_env_map();
-            let backup = save_env_file(Path::new(".env"), &values)?;
+            let backup = save_config_yaml(Path::new("config.yaml"), &values)?;
             app.backup_path = backup;
             app.completion_summary = checks;
             Ok(())
         }) {
         Ok(_) => {
-            app.status = "Saved .env".into();
+            app.status = "Saved config.yaml".into();
             app.completed = true;
         }
         Err(e) => app.status = format!("Cannot save: {e}"),
@@ -1168,16 +1209,11 @@ mod tests {
     }
 
     #[test]
-    fn test_save_env_file() {
-        let env_path = std::env::temp_dir().join(format!(
-            "microclaw_setup_test_{}.env",
+    fn test_save_config_yaml() {
+        let yaml_path = std::env::temp_dir().join(format!(
+            "microclaw_setup_test_{}.yaml",
             Utc::now().timestamp_nanos_opt().unwrap_or_default()
         ));
-        fs::write(
-            &env_path,
-            "FOO=bar\nTELEGRAM_BOT_TOKEN=old\n# comment\nBOT_USERNAME=old_bot\n",
-        )
-        .unwrap();
 
         let mut values = HashMap::new();
         values.insert("TELEGRAM_BOT_TOKEN".into(), "new_tok".into());
@@ -1185,16 +1221,19 @@ mod tests {
         values.insert("LLM_PROVIDER".into(), "anthropic".into());
         values.insert("LLM_API_KEY".into(), "key".into());
 
-        let backup = save_env_file(&env_path, &values).unwrap();
-        assert!(backup.is_some());
+        let backup = save_config_yaml(&yaml_path, &values).unwrap();
+        assert!(backup.is_none()); // No previous file to back up
 
-        let s = fs::read_to_string(&env_path).unwrap();
-        assert!(s.contains("FOO=bar"));
-        assert!(s.contains("TELEGRAM_BOT_TOKEN=new_tok"));
-        assert!(s.contains("BOT_USERNAME=new_bot"));
-        assert!(s.contains("LLM_PROVIDER=anthropic"));
-        assert!(s.contains("LLM_API_KEY=key"));
+        let s = fs::read_to_string(&yaml_path).unwrap();
+        assert!(s.contains("telegram_bot_token: \"new_tok\""));
+        assert!(s.contains("bot_username: \"new_bot\""));
+        assert!(s.contains("llm_provider: \"anthropic\""));
+        assert!(s.contains("api_key: \"key\""));
 
-        let _ = fs::remove_file(&env_path);
+        // Save again to test backup
+        let backup2 = save_config_yaml(&yaml_path, &values).unwrap();
+        assert!(backup2.is_some());
+
+        let _ = fs::remove_file(&yaml_path);
     }
 }

@@ -1,6 +1,7 @@
 mod claude;
 mod config;
 mod db;
+mod discord;
 mod error;
 mod llm;
 mod mcp;
@@ -21,13 +22,13 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn print_help() {
     println!(
-        r#"MicroClaw v{VERSION} — Agentic AI assistant for Telegram
+        r#"MicroClaw v{VERSION} — Agentic AI assistant for Telegram, WhatsApp & Discord
 
 USAGE:
     microclaw <COMMAND>
 
 COMMANDS:
-    start       Start the Telegram bot
+    start       Start the bot (Telegram + optional WhatsApp/Discord)
     setup       Run interactive setup wizard
     help        Show this help message
 
@@ -45,47 +46,59 @@ FEATURES:
     - Continuous typing indicator
     - MCP (Model Context Protocol) server integration
     - WhatsApp Cloud API support
+    - Discord bot support
+    - Sensitive path blacklisting for file tools
 
 SETUP:
     1. Run: microclaw setup
        (or run microclaw start and follow auto-setup on first launch)
-    2. Required values:
+    2. Edit config.yaml with required values:
 
-       TELEGRAM_BOT_TOKEN   Bot token from @BotFather
-       LLM_API_KEY          API key (also accepts ANTHROPIC_API_KEY)
-       BOT_USERNAME         Your bot's username (without @)
+       telegram_bot_token    Bot token from @BotFather
+       api_key               LLM API key
+       bot_username          Your bot's username (without @)
 
     3. Run: microclaw start
 
-LLM PROVIDER ENV VARS:
-    LLM_PROVIDER             Provider preset or custom ID (default: anthropic)
-    LLM_API_KEY              API key (falls back to ANTHROPIC_API_KEY)
-    LLM_MODEL                Model name (falls back to CLAUDE_MODEL)
-    LLM_BASE_URL             Custom base URL for the provider (optional)
-                             Supports OpenRouter, DeepSeek, Groq, Ollama, etc.
+CONFIG FILE (config.yaml):
+    MicroClaw reads configuration from config.yaml (or config.yml).
+    Override the path with MICROCLAW_CONFIG env var.
+    See config.example.yaml for all available fields.
 
-OPTIONAL ENV VARS:
-    DATA_DIR                 Data directory (default: ./data)
-    MAX_TOKENS               Max tokens per response (default: 8192)
-    MAX_TOOL_ITERATIONS      Max tool loop iterations (default: 25)
-    MAX_HISTORY_MESSAGES     Chat history context size (default: 50)
-    OPENAI_API_KEY           OpenAI API key for voice transcription (optional)
-    TIMEZONE                 IANA timezone for scheduling (default: UTC)
-    ALLOWED_GROUPS           Comma-separated chat IDs to allow (empty = all)
-    RUST_LOG                 Log level, e.g. debug, info (default: info)
+    Core fields:
+      telegram_bot_token     Telegram bot token from @BotFather
+      bot_username           Bot username without @
+      llm_provider           Provider preset (default: anthropic)
+      api_key                LLM API key
+      model                  Model name (auto-detected from provider if empty)
+      llm_base_url           Custom base URL (optional)
 
-WHATSAPP (optional):
-    WHATSAPP_ACCESS_TOKEN    Meta API access token
-    WHATSAPP_PHONE_NUMBER_ID Phone number ID from Meta dashboard
-    WHATSAPP_VERIFY_TOKEN    Webhook verification token (you choose)
-    WHATSAPP_WEBHOOK_PORT    Webhook server port (default: 8080)
+    Runtime:
+      data_dir               Data directory (default: ./data)
+      max_tokens             Max tokens per response (default: 8192)
+      max_tool_iterations    Max tool loop iterations (default: 25)
+      max_history_messages   Chat history context size (default: 50)
+      openai_api_key         OpenAI key for voice transcription (optional)
+      timezone               IANA timezone for scheduling (default: UTC)
+      allowed_groups         List of chat IDs to allow (empty = all)
+
+    WhatsApp (optional):
+      whatsapp_access_token       Meta API access token
+      whatsapp_phone_number_id    Phone number ID from Meta dashboard
+      whatsapp_verify_token       Webhook verification token
+      whatsapp_webhook_port       Webhook server port (default: 8080)
+
+    Discord (optional):
+      discord_bot_token           Discord bot token from Discord Developer Portal
+      discord_allowed_channels    List of channel IDs to respond in (empty = all)
 
 MCP (optional):
-    Place a mcp.json file in DATA_DIR to connect MCP servers.
+    Place a mcp.json file in data_dir to connect MCP servers.
     See https://modelcontextprotocol.io for details.
 
 EXAMPLES:
     microclaw start          Start the bot
+    microclaw setup          Run interactive setup wizard
     microclaw help           Show this message
 
 ABOUT:
@@ -103,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
         Some("setup") => {
             let saved = setup::run_setup_wizard()?;
             if saved {
-                println!("Setup saved to .env");
+                println!("Setup saved to config.yaml");
             } else {
                 println!("Setup canceled");
             }
@@ -127,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let config = match Config::from_env() {
+    let config = match Config::load() {
         Ok(c) => c,
         Err(MicroClawError::Config(e)) => {
             eprintln!("Config missing/invalid: {e}");
@@ -138,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
                     "setup canceled and config is still incomplete"
                 ));
             }
-            Config::from_env()?
+            Config::load()?
         }
         Err(e) => return Err(e.into()),
     };

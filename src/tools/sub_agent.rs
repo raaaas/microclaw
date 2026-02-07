@@ -202,6 +202,8 @@ mod tests {
             whatsapp_phone_number_id: None,
             whatsapp_verify_token: None,
             whatsapp_webhook_port: 8080,
+            discord_bot_token: None,
+            discord_allowed_channels: vec![],
         }
     }
 

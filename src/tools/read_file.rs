@@ -44,6 +44,10 @@ impl Tool for ReadFileTool {
             None => return ToolResult::error("Missing 'path' parameter".into()),
         };
 
+        if let Err(msg) = crate::tools::path_guard::check_path(path) {
+            return ToolResult::error(msg);
+        }
+
         info!("Reading file: {}", path);
 
         let content = match tokio::fs::read_to_string(path).await {

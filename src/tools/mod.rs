@@ -6,6 +6,7 @@ pub mod glob;
 pub mod grep;
 pub mod mcp;
 pub mod memory;
+pub mod path_guard;
 pub mod read_file;
 pub mod schedule;
 pub mod send_message;

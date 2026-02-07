@@ -40,6 +40,10 @@ impl Tool for WriteFileTool {
             None => return ToolResult::error("Missing 'path' parameter".into()),
         };
 
+        if let Err(msg) = crate::tools::path_guard::check_path(path) {
+            return ToolResult::error(msg);
+        }
+
         let content = match input.get("content").and_then(|v| v.as_str()) {
             Some(c) => c,
             None => return ToolResult::error("Missing 'content' parameter".into()),

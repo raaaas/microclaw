@@ -55,6 +55,7 @@ impl Tool for GlobTool {
                     .filter_map(|p| p.ok())
                     .map(|p| p.display().to_string())
                     .collect();
+                matches = crate::tools::path_guard::filter_paths(matches);
                 matches.sort();
 
                 if matches.is_empty() {

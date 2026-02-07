@@ -43,6 +43,11 @@ impl Tool for EditFileTool {
             Some(p) => p,
             None => return ToolResult::error("Missing 'path' parameter".into()),
         };
+
+        if let Err(msg) = crate::tools::path_guard::check_path(path) {
+            return ToolResult::error(msg);
+        }
+
         let old_string = match input.get("old_string").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return ToolResult::error("Missing 'old_string' parameter".into()),
