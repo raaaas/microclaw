@@ -4,6 +4,12 @@
 
 > **注意：** 本项目正在积极开发中，功能可能会变化，欢迎贡献！
 
+<p align="center">
+  <img src="screenshots/screenshot1.png" width="45%" />
+  &nbsp;&nbsp;
+  <img src="screenshots/screenshot2.png" width="45%" />
+</p>
+
 MicroClaw 是 [nanoclaw](https://github.com/gavrielc/nanoclaw/) 的 Rust 重写版 -- 一个住在 Telegram 聊天里的 AI 智能助手。它将 Claude 连接到 Telegram，支持完整的工具执行：运行 Shell 命令、读写编辑文件、搜索代码库、浏览网页、定时任务、持久化记忆等。
 
 ## 工作原理

@@ -4,6 +4,12 @@
 
 > **Note:** This project is under active development. Features may change, and contributions are welcome!
 
+<p align="center">
+  <img src="screenshots/screenshot1.png" width="45%" />
+  &nbsp;&nbsp;
+  <img src="screenshots/screenshot2.png" width="45%" />
+</p>
+
 A Rust rewrite of [nanoclaw](https://github.com/gavrielc/nanoclaw/) -- an agentic AI assistant that lives in your Telegram chats. MicroClaw connects Claude to Telegram with full tool execution: run shell commands, read/write/edit files, search codebases, browse the web, schedule tasks, and maintain persistent memory across conversations.
 
 ## How it works
