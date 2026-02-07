@@ -164,7 +164,7 @@ Manage tasks with natural language:
 ### One-line installer (recommended)
 
 ```sh
-curl -fsSL https://openclaw.ai/install.sh | bash
+curl -fsSL https://microclaw.ai/install.sh | bash
 ```
 
 This installer tries, in order:

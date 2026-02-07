@@ -163,7 +163,7 @@ Todo 列表存储在 `data/groups/{chat_id}/TODO.json`，跨会话持久化。
 ### 一键安装（推荐）
 
 ```sh
-curl -fsSL https://openclaw.ai/install.sh | bash
+curl -fsSL https://microclaw.ai/install.sh | bash
 ```
 
 安装脚本会按顺序尝试：
