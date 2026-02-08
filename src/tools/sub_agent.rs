@@ -240,7 +240,7 @@ mod tests {
         let config = test_config();
         let registry = ToolRegistry::new_sub_agent(&config);
         let defs = registry.definitions();
-        assert_eq!(defs.len(), 10);
+        assert_eq!(defs.len(), 11);
     }
 
     #[test]

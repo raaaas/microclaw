@@ -1,5 +1,6 @@
 pub mod activate_skill;
 pub mod bash;
+pub mod browser;
 pub mod edit_file;
 pub mod export_chat;
 pub mod glob;
@@ -122,6 +123,7 @@ impl ToolRegistry {
         let skills_data_dir = config.skills_data_dir();
         let tools: Vec<Box<dyn Tool>> = vec![
             Box::new(bash::BashTool),
+            Box::new(browser::BrowserTool),
             Box::new(read_file::ReadFileTool),
             Box::new(write_file::WriteFileTool),
             Box::new(edit_file::EditFileTool),
@@ -155,6 +157,7 @@ impl ToolRegistry {
         let skills_data_dir = config.skills_data_dir();
         let tools: Vec<Box<dyn Tool>> = vec![
             Box::new(bash::BashTool),
+            Box::new(browser::BrowserTool),
             Box::new(read_file::ReadFileTool),
             Box::new(write_file::WriteFileTool),
             Box::new(edit_file::EditFileTool),
