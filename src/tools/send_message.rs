@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use teloxide::prelude::*;
 
-use super::{schema_object, Tool, ToolResult};
+use super::{authorize_chat_access, schema_object, Tool, ToolResult};
 use crate::claude::ToolDefinition;
 
 pub struct SendMessageTool {
@@ -51,9 +51,53 @@ impl Tool for SendMessageTool {
             None => return ToolResult::error("Missing required parameter: text".into()),
         };
 
+        if let Err(e) = authorize_chat_access(&input, chat_id) {
+            return ToolResult::error(e);
+        }
+
         match self.bot.send_message(ChatId(chat_id), text).await {
             Ok(_) => ToolResult::success("Message sent successfully.".into()),
             Err(e) => ToolResult::error(format!("Failed to send message: {e}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn test_send_message_permission_denied_before_network() {
+        let tool = SendMessageTool::new(Bot::new("123456:TEST_TOKEN"));
+        let result = tool
+            .execute(json!({
+                "chat_id": 200,
+                "text": "hello",
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": []
+                }
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result.content.contains("Permission denied"));
+    }
+
+    #[tokio::test]
+    async fn test_send_message_control_chat_not_blocked_by_permission_layer() {
+        let tool = SendMessageTool::new(Bot::new("123456:TEST_TOKEN"));
+        let result = tool
+            .execute(json!({
+                "chat_id": 200,
+                "text": "hello",
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": [100]
+                }
+            }))
+            .await;
+        // With fake token this may still fail on network/auth, but must not fail on permission layer.
+        assert!(!result.content.contains("Permission denied"));
     }
 }

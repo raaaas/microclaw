@@ -726,10 +726,7 @@ fn perform_online_validation(
 
     let preset = find_provider_preset(provider);
     let protocol = provider_protocol(provider);
-    let should_skip_models_check = matches!(
-        provider,
-        "azure" | "bedrock" | "tencent"
-    );
+    let should_skip_models_check = matches!(provider, "azure" | "bedrock" | "tencent");
 
     if should_skip_models_check {
         checks.push(format!(

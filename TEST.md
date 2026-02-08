@@ -378,6 +378,35 @@ You: What did we just talk about?
 
 ---
 
+## 28. Multi-Chat Permission Model -- Deny Path
+
+**Test:** From a non-control chat, attempt cross-chat operation.
+
+```
+You: Send a message to chat_id 123456 saying "hello from cross-chat test"
+```
+
+**Expected:** Tool call is blocked with a permission error (chat cannot operate on another chat).
+
+---
+
+## 29. Multi-Chat Permission Model -- Allow Path
+
+**Test:** Add current chat to `control_chat_ids`, restart bot, then retry cross-chat operation.
+
+```yaml
+# microclaw.config.yaml
+control_chat_ids: [CURRENT_CHAT_ID]
+```
+
+```
+You: Send a message to chat_id 123456 saying "hello from control chat"
+```
+
+**Expected:** Permission layer allows the tool call. Final delivery still depends on target chat reachability and platform constraints.
+
+---
+
 ## 28. Sub-Agent
 
 **Test:** Verify the sub_agent tool works.

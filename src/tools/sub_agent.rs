@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use tracing::info;
 
-use super::{schema_object, Tool, ToolRegistry, ToolResult};
+use super::{auth_context_from_input, schema_object, Tool, ToolRegistry, ToolResult};
 use crate::claude::{ContentBlock, Message, MessageContent, ResponseContentBlock, ToolDefinition};
 use crate::config::Config;
 
@@ -47,6 +47,7 @@ impl Tool for SubAgentTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> ToolResult {
+        let auth_context = auth_context_from_input(&input);
         let task = match input.get("task").and_then(|v| v.as_str()) {
             Some(t) => t,
             None => return ToolResult::error("Missing required parameter: task".into()),
@@ -137,7 +138,11 @@ impl Tool for SubAgentTool {
                             name,
                             iteration + 1
                         );
-                        let result = tools.execute(name, input.clone()).await;
+                        let result = if let Some(ref auth) = auth_context {
+                            tools.execute_with_auth(name, input.clone(), auth).await
+                        } else {
+                            tools.execute(name, input.clone()).await
+                        };
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: result.content,
@@ -196,6 +201,7 @@ mod tests {
             openai_api_key: None,
             timezone: "UTC".into(),
             allowed_groups: vec![],
+            control_chat_ids: vec![],
             max_session_messages: 40,
             compact_keep_recent: 20,
             whatsapp_access_token: None,

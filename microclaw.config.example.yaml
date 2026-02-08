@@ -38,6 +38,10 @@ compact_keep_recent: 20
 # Telegram group allowlist (empty = allow all groups)
 # allowed_groups: []
 
+# Control chats can operate across chats (send_message/schedule/memory global/export/todo).
+# Non-control chats are restricted to their own chat_id.
+# control_chat_ids: []
+
 # WhatsApp Cloud API (optional)
 # whatsapp_access_token: ""
 # whatsapp_phone_number_id: ""

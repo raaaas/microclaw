@@ -347,6 +347,34 @@ impl Database {
         Ok(tasks)
     }
 
+    pub fn get_task_by_id(&self, task_id: i64) -> Result<Option<ScheduledTask>, MicroClawError> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT id, chat_id, prompt, schedule_type, schedule_value, next_run, last_run, status, created_at
+             FROM scheduled_tasks
+             WHERE id = ?1",
+            params![task_id],
+            |row| {
+                Ok(ScheduledTask {
+                    id: row.get(0)?,
+                    chat_id: row.get(1)?,
+                    prompt: row.get(2)?,
+                    schedule_type: row.get(3)?,
+                    schedule_value: row.get(4)?,
+                    next_run: row.get(5)?,
+                    last_run: row.get(6)?,
+                    status: row.get(7)?,
+                    created_at: row.get(8)?,
+                })
+            },
+        );
+        match result {
+            Ok(task) => Ok(Some(task)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub fn update_task_status(&self, task_id: i64, status: &str) -> Result<bool, MicroClawError> {
         let conn = self.conn.lock().unwrap();
         let rows = conn.execute(

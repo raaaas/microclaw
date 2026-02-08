@@ -41,6 +41,9 @@ fn default_compact_keep_recent() -> usize {
 fn default_whatsapp_webhook_port() -> u16 {
     8080
 }
+fn default_control_chat_ids() -> Vec<i64> {
+    Vec::new()
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -70,6 +73,8 @@ pub struct Config {
     pub timezone: String,
     #[serde(default)]
     pub allowed_groups: Vec<i64>,
+    #[serde(default = "default_control_chat_ids")]
+    pub control_chat_ids: Vec<i64>,
     #[serde(default = "default_max_session_messages")]
     pub max_session_messages: usize,
     #[serde(default = "default_compact_keep_recent")]
@@ -210,6 +215,7 @@ mod tests {
             openai_api_key: None,
             timezone: "UTC".into(),
             allowed_groups: vec![],
+            control_chat_ids: vec![],
             max_session_messages: 40,
             compact_keep_recent: 20,
             whatsapp_access_token: None,
@@ -232,6 +238,7 @@ mod tests {
         assert!(cloned.openai_api_key.is_none());
         assert_eq!(cloned.timezone, "UTC");
         assert!(cloned.allowed_groups.is_empty());
+        assert!(cloned.control_chat_ids.is_empty());
         assert_eq!(cloned.max_session_messages, 40);
         assert_eq!(cloned.compact_keep_recent, 20);
         assert!(cloned.discord_bot_token.is_none());
@@ -245,11 +252,13 @@ mod tests {
         config.openai_api_key = Some("sk-test".into());
         config.timezone = "US/Eastern".into();
         config.allowed_groups = vec![123, 456];
+        config.control_chat_ids = vec![999];
         assert_eq!(config.model, "claude-sonnet-4-20250514");
         assert_eq!(config.data_dir, "./microclaw.data");
         assert_eq!(config.openai_api_key.as_deref(), Some("sk-test"));
         assert_eq!(config.timezone, "US/Eastern");
         assert_eq!(config.allowed_groups, vec![123, 456]);
+        assert_eq!(config.control_chat_ids, vec![999]);
     }
 
     #[test]
@@ -287,7 +296,9 @@ mod tests {
     fn test_runtime_and_skills_dirs_from_root_data_dir() {
         let mut config = test_config();
         config.data_dir = "./microclaw.data".into();
-        assert!(config.runtime_data_dir().ends_with("microclaw.data/runtime"));
+        assert!(config
+            .runtime_data_dir()
+            .ends_with("microclaw.data/runtime"));
         assert!(config.skills_data_dir().ends_with("microclaw.data/skills"));
     }
 
@@ -295,7 +306,11 @@ mod tests {
     fn test_runtime_and_skills_dirs_from_runtime_data_dir() {
         let mut config = test_config();
         config.data_dir = "./microclaw.data/runtime".into();
-        assert!(config.runtime_data_dir().ends_with("microclaw.data/runtime/runtime"));
-        assert!(config.skills_data_dir().ends_with("microclaw.data/runtime/skills"));
+        assert!(config
+            .runtime_data_dir()
+            .ends_with("microclaw.data/runtime/runtime"));
+        assert!(config
+            .skills_data_dir()
+            .ends_with("microclaw.data/runtime/skills"));
     }
 }

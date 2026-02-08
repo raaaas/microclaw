@@ -47,6 +47,65 @@ impl ToolResult {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct ToolAuthContext {
+    pub caller_chat_id: i64,
+    pub control_chat_ids: Vec<i64>,
+}
+
+impl ToolAuthContext {
+    pub fn is_control_chat(&self) -> bool {
+        self.control_chat_ids.contains(&self.caller_chat_id)
+    }
+
+    pub fn can_access_chat(&self, target_chat_id: i64) -> bool {
+        self.is_control_chat() || self.caller_chat_id == target_chat_id
+    }
+}
+
+const AUTH_CONTEXT_KEY: &str = "__microclaw_auth";
+
+pub fn auth_context_from_input(input: &serde_json::Value) -> Option<ToolAuthContext> {
+    let ctx = input.get(AUTH_CONTEXT_KEY)?;
+    let caller_chat_id = ctx.get("caller_chat_id")?.as_i64()?;
+    let control_chat_ids = ctx
+        .get("control_chat_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_i64()).collect())
+        .unwrap_or_default();
+    Some(ToolAuthContext {
+        caller_chat_id,
+        control_chat_ids,
+    })
+}
+
+pub fn authorize_chat_access(input: &serde_json::Value, target_chat_id: i64) -> Result<(), String> {
+    if let Some(auth) = auth_context_from_input(input) {
+        if !auth.can_access_chat(target_chat_id) {
+            return Err(format!(
+                "Permission denied: chat {} cannot operate on chat {}",
+                auth.caller_chat_id, target_chat_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn inject_auth_context(input: serde_json::Value, auth: &ToolAuthContext) -> serde_json::Value {
+    let mut obj = match input {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    obj.insert(
+        AUTH_CONTEXT_KEY.to_string(),
+        json!({
+            "caller_chat_id": auth.caller_chat_id,
+            "control_chat_ids": auth.control_chat_ids,
+        }),
+    );
+    serde_json::Value::Object(obj)
+}
+
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
@@ -125,6 +184,16 @@ impl ToolRegistry {
         }
         ToolResult::error(format!("Unknown tool: {name}"))
     }
+
+    pub async fn execute_with_auth(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+        auth: &ToolAuthContext,
+    ) -> ToolResult {
+        let input = inject_auth_context(input, auth);
+        self.execute(name, input).await
+    }
 }
 
 /// Helper to build a JSON Schema object with required properties.
@@ -176,5 +245,31 @@ mod tests {
         let schema = schema_object(json!({}), &[]);
         let required = schema["required"].as_array().unwrap();
         assert!(required.is_empty());
+    }
+
+    #[test]
+    fn test_auth_context_from_input() {
+        let input = json!({
+            "__microclaw_auth": {
+                "caller_chat_id": 123,
+                "control_chat_ids": [123, 999]
+            }
+        });
+        let auth = auth_context_from_input(&input).unwrap();
+        assert_eq!(auth.caller_chat_id, 123);
+        assert!(auth.is_control_chat());
+        assert!(auth.can_access_chat(456));
+    }
+
+    #[test]
+    fn test_authorize_chat_access_denied() {
+        let input = json!({
+            "__microclaw_auth": {
+                "caller_chat_id": 100,
+                "control_chat_ids": []
+            }
+        });
+        let err = authorize_chat_access(&input, 200).unwrap_err();
+        assert!(err.contains("Permission denied"));
     }
 }

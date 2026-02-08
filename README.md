@@ -302,6 +302,7 @@ All configuration is via `microclaw.config.yaml`:
 | `max_tokens` | No | `8192` | Max tokens per model response |
 | `max_tool_iterations` | No | `25` | Max tool-use loop iterations per message |
 | `max_history_messages` | No | `50` | Number of recent messages sent as context |
+| `control_chat_ids` | No | `[]` | Chat IDs that can perform cross-chat actions (send_message/schedule/export/memory global/todo) |
 | `max_session_messages` | No | `40` | Message count threshold that triggers context compaction |
 | `compact_keep_recent` | No | `20` | Number of recent messages to keep verbatim during compaction |
 
@@ -314,6 +315,16 @@ All configuration is via `microclaw.config.yaml`:
 In private chats, the bot responds to every message. In groups, it only responds when mentioned with `@bot_username`. All messages in groups are still stored for context.
 
 **Catch-up behavior:** When mentioned in a group, the bot loads all messages since its last reply in that group (instead of just the last N messages). This means it catches up on everything it missed, making group interactions much more contextual.
+
+## Multi-chat permission model
+
+Tool calls are authorized against the current chat:
+
+- Non-control chats can only operate on their own `chat_id`
+- Control chats (`control_chat_ids`) can operate across chats
+- `write_memory` with `scope: "global"` is restricted to control chats
+
+Affected tools include `send_message`, scheduling tools, `export_chat`, `todo_*`, and chat-scoped memory operations.
 
 ## Usage examples
 

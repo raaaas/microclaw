@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::json;
 
-use super::{schema_object, Tool, ToolResult};
+use super::{authorize_chat_access, schema_object, Tool, ToolResult};
 use crate::claude::ToolDefinition;
 use crate::db::Database;
 
@@ -81,6 +81,9 @@ impl Tool for ScheduleTaskTool {
             Some(id) => id,
             None => return ToolResult::error("Missing required parameter: chat_id".into()),
         };
+        if let Err(e) = authorize_chat_access(&input, chat_id) {
+            return ToolResult::error(e);
+        }
         let prompt = match input.get("prompt").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return ToolResult::error("Missing required parameter: prompt".into()),
@@ -169,6 +172,9 @@ impl Tool for ListTasksTool {
             Some(id) => id,
             None => return ToolResult::error("Missing required parameter: chat_id".into()),
         };
+        if let Err(e) = authorize_chat_access(&input, chat_id) {
+            return ToolResult::error(e);
+        }
 
         match self.db.get_tasks_for_chat(chat_id) {
             Ok(tasks) => {
@@ -228,6 +234,14 @@ impl Tool for PauseTaskTool {
             Some(id) => id,
             None => return ToolResult::error("Missing required parameter: task_id".into()),
         };
+        let task = match self.db.get_task_by_id(task_id) {
+            Ok(Some(t)) => t,
+            Ok(None) => return ToolResult::error(format!("Task #{task_id} not found.")),
+            Err(e) => return ToolResult::error(format!("Failed to load task: {e}")),
+        };
+        if let Err(e) = authorize_chat_access(&input, task.chat_id) {
+            return ToolResult::error(e);
+        }
 
         match self.db.update_task_status(task_id, "paused") {
             Ok(true) => ToolResult::success(format!("Task #{task_id} paused.")),
@@ -276,6 +290,14 @@ impl Tool for ResumeTaskTool {
             Some(id) => id,
             None => return ToolResult::error("Missing required parameter: task_id".into()),
         };
+        let task = match self.db.get_task_by_id(task_id) {
+            Ok(Some(t)) => t,
+            Ok(None) => return ToolResult::error(format!("Task #{task_id} not found.")),
+            Err(e) => return ToolResult::error(format!("Failed to load task: {e}")),
+        };
+        if let Err(e) = authorize_chat_access(&input, task.chat_id) {
+            return ToolResult::error(e);
+        }
 
         match self.db.update_task_status(task_id, "active") {
             Ok(true) => ToolResult::success(format!("Task #{task_id} resumed.")),
@@ -324,6 +346,14 @@ impl Tool for CancelTaskTool {
             Some(id) => id,
             None => return ToolResult::error("Missing required parameter: task_id".into()),
         };
+        let task = match self.db.get_task_by_id(task_id) {
+            Ok(Some(t)) => t,
+            Ok(None) => return ToolResult::error(format!("Task #{task_id} not found.")),
+            Err(e) => return ToolResult::error(format!("Failed to load task: {e}")),
+        };
+        if let Err(e) = authorize_chat_access(&input, task.chat_id) {
+            return ToolResult::error(e);
+        }
 
         match self.db.update_task_status(task_id, "cancelled") {
             Ok(true) => ToolResult::success(format!("Task #{task_id} cancelled.")),
@@ -376,6 +406,14 @@ impl Tool for GetTaskHistoryTool {
             Some(id) => id,
             None => return ToolResult::error("Missing required parameter: task_id".into()),
         };
+        let task = match self.db.get_task_by_id(task_id) {
+            Ok(Some(t)) => t,
+            Ok(None) => return ToolResult::error(format!("Task #{task_id} not found.")),
+            Err(e) => return ToolResult::error(format!("Failed to load task: {e}")),
+        };
+        if let Err(e) = authorize_chat_access(&input, task.chat_id) {
+            return ToolResult::error(e);
+        }
         let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
         match self.db.get_task_run_logs(task_id, limit) {
@@ -630,8 +668,11 @@ mod tests {
     #[tokio::test]
     async fn test_get_task_history_empty() {
         let (db, dir) = test_db();
+        let task_id = db
+            .create_scheduled_task(100, "test", "cron", "0 * * * * *", "2024-01-01T00:00:00Z")
+            .unwrap();
         let tool = GetTaskHistoryTool::new(db);
-        let result = tool.execute(json!({"task_id": 1})).await;
+        let result = tool.execute(json!({"task_id": task_id})).await;
         assert!(!result.is_error);
         assert!(result.content.contains("No run history"));
         cleanup(&dir);
@@ -672,6 +713,92 @@ mod tests {
         assert!(result.content.contains("FAIL"));
         assert!(result.content.contains("All good"));
         assert!(result.content.contains("Error: timeout"));
+        cleanup(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_schedule_task_permission_denied_cross_chat() {
+        let (db, dir) = test_db();
+        let tool = ScheduleTaskTool::new(db, "UTC".into());
+        let result = tool
+            .execute(json!({
+                "chat_id": 200,
+                "prompt": "say hi",
+                "schedule_type": "once",
+                "schedule_value": "2099-12-31T23:59:59+00:00",
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": []
+                }
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result.content.contains("Permission denied"));
+        cleanup(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_pause_task_permission_denied_cross_chat() {
+        let (db, dir) = test_db();
+        let task_id = db
+            .create_scheduled_task(200, "test", "cron", "0 * * * * *", "2024-01-01T00:00:00Z")
+            .unwrap();
+        let tool = PauseTaskTool::new(db);
+        let result = tool
+            .execute(json!({
+                "task_id": task_id,
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": []
+                }
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result.content.contains("Permission denied"));
+        cleanup(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_schedule_task_allowed_for_control_chat_cross_chat() {
+        let (db, dir) = test_db();
+        let tool = ScheduleTaskTool::new(db.clone(), "UTC".into());
+        let result = tool
+            .execute(json!({
+                "chat_id": 200,
+                "prompt": "say hi",
+                "schedule_type": "once",
+                "schedule_value": "2099-12-31T23:59:59+00:00",
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": [100]
+                }
+            }))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        let tasks = db.get_tasks_for_chat(200).unwrap();
+        assert_eq!(tasks.len(), 1);
+        cleanup(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_pause_task_allowed_for_control_chat_cross_chat() {
+        let (db, dir) = test_db();
+        let task_id = db
+            .create_scheduled_task(200, "test", "cron", "0 * * * * *", "2024-01-01T00:00:00Z")
+            .unwrap();
+        let tool = PauseTaskTool::new(db.clone());
+        let result = tool
+            .execute(json!({
+                "task_id": task_id,
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": [100]
+                }
+            }))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        let task = db.get_task_by_id(task_id).unwrap().unwrap();
+        assert_eq!(task.status, "paused");
         cleanup(&dir);
     }
 }

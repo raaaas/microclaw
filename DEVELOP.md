@@ -136,6 +136,15 @@ Telegram message
 - Scheduler gets `Arc<AppState>` at spawn time
 - Tools that need `Bot` or `Database` hold their own clones/arcs (passed at construction)
 
+### Multi-chat permission model
+
+- `control_chat_ids` in `microclaw.config.yaml` defines privileged chats.
+- Tool execution receives trusted caller context from `process_with_claude` (not from model-provided args).
+- Non-control chats can only operate on their own `chat_id`.
+- Control chats can perform cross-chat actions.
+- `write_memory` with `scope: "global"` is restricted to control chats.
+- Enforcement currently applies to `send_message`, scheduler tools, `export_chat`, `todo_*`, and chat-scoped memory operations.
+
 ### Database tables
 
 **chats:**

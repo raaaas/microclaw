@@ -6,7 +6,7 @@ use tracing::info;
 
 use crate::claude::ToolDefinition;
 
-use super::{schema_object, Tool, ToolResult};
+use super::{authorize_chat_access, schema_object, Tool, ToolResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoItem {
@@ -93,6 +93,9 @@ impl Tool for TodoReadTool {
             Some(id) => id,
             None => return ToolResult::error("Missing 'chat_id' parameter".into()),
         };
+        if let Err(e) = authorize_chat_access(&input, chat_id) {
+            return ToolResult::error(e);
+        }
 
         info!("Reading todo list for chat {}", chat_id);
         let todos = read_todos(&self.groups_dir, chat_id);
@@ -160,6 +163,9 @@ impl Tool for TodoWriteTool {
             Some(id) => id,
             None => return ToolResult::error("Missing 'chat_id' parameter".into()),
         };
+        if let Err(e) = authorize_chat_access(&input, chat_id) {
+            return ToolResult::error(e);
+        }
 
         let todos_val = match input.get("todos") {
             Some(v) => v,
@@ -388,6 +394,73 @@ mod tests {
         let result = read_tool.execute(json!({"chat_id": 1})).await;
         assert!(result.content.contains("New task"));
         assert!(!result.content.contains("Old task"));
+        cleanup(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_todo_read_permission_denied() {
+        let dir = test_dir();
+        let tool = TodoReadTool::new(dir.to_str().unwrap());
+        let result = tool
+            .execute(json!({
+                "chat_id": 200,
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": []
+                }
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result.content.contains("Permission denied"));
+        cleanup(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_todo_write_permission_denied() {
+        let dir = test_dir();
+        let tool = TodoWriteTool::new(dir.to_str().unwrap());
+        let result = tool
+            .execute(json!({
+                "chat_id": 200,
+                "todos": [{"task": "x", "status": "pending"}],
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": []
+                }
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result.content.contains("Permission denied"));
+        cleanup(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_todo_write_and_read_allowed_for_control_chat_cross_chat() {
+        let dir = test_dir();
+        let write_tool = TodoWriteTool::new(dir.to_str().unwrap());
+        let read_tool = TodoReadTool::new(dir.to_str().unwrap());
+        let result = write_tool
+            .execute(json!({
+                "chat_id": 200,
+                "todos": [{"task": "cross", "status": "pending"}],
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": [100]
+                }
+            }))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        let result = read_tool
+            .execute(json!({
+                "chat_id": 200,
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": [100]
+                }
+            }))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("cross"));
         cleanup(&dir);
     }
 }

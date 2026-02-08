@@ -300,6 +300,7 @@ microclaw start
 | `max_tokens` | 否 | `8192` | 每次 Claude 回复的最大 token |
 | `max_tool_iterations` | 否 | `25` | 每条消息的最大工具循环次数 |
 | `max_history_messages` | 否 | `50` | 作为上下文发送的历史消息数 |
+| `control_chat_ids` | 否 | `[]` | 可跨聊天执行操作的 chat_id 列表（send_message/定时/导出/全局记忆/todo） |
 | `max_session_messages` | 否 | `40` | 触发上下文压缩的消息数阈值 |
 | `compact_keep_recent` | 否 | `20` | 压缩时保留的最近消息数 |
 
@@ -312,6 +313,16 @@ microclaw start
 私聊中机器人回复每条消息。群聊中只在被 `@bot_username` 提及时回复。所有群消息仍会存储用于上下文。
 
 **追赶行为：** 在群里被 @ 时，机器人会加载该群上次回复以来的所有消息（而不是仅最近 N 条），使群聊交互更具上下文。
+
+## 多聊天权限模型
+
+工具调用会按当前聊天做权限校验：
+
+- 非控制聊天只能操作自己的 `chat_id`
+- 控制聊天（`control_chat_ids`）可跨聊天操作
+- `write_memory` 的 `scope: "global"` 仅控制聊天可写
+
+已接入权限校验的工具包括 `send_message`、定时任务相关工具、`export_chat`、`todo_*` 以及 chat scope 的记忆操作。
 
 ## 使用示例
 

@@ -10,7 +10,7 @@ use crate::db::{Database, StoredMessage};
 use crate::llm::LlmProvider;
 use crate::memory::MemoryManager;
 use crate::skills::SkillManager;
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolAuthContext, ToolRegistry};
 
 /// Escape XML special characters in user-supplied content to prevent prompt injection.
 /// User messages are wrapped in XML tags; escaping ensures the content cannot break out.
@@ -469,6 +469,10 @@ pub(crate) async fn process_with_claude(
     }
 
     let tool_defs = state.tools.definitions();
+    let tool_auth = ToolAuthContext {
+        caller_chat_id: chat_id,
+        control_chat_ids: state.config.control_chat_ids.clone(),
+    };
 
     // Agentic tool-use loop
     for iteration in 0..state.config.max_tool_iterations {
@@ -528,7 +532,10 @@ pub(crate) async fn process_with_claude(
             for block in &response.content {
                 if let ResponseContentBlock::ToolUse { id, name, input } = block {
                     info!("Executing tool: {} (iteration {})", name, iteration + 1);
-                    let result = state.tools.execute(name, input.clone()).await;
+                    let result = state
+                        .tools
+                        .execute_with_auth(name, input.clone(), &tool_auth)
+                        .await;
                     tool_results.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
                         content: result.content,
@@ -629,7 +636,8 @@ You have access to the following capabilities:
 - Activate agent skills (activate_skill) for specialized tasks
 - Plan and track tasks with a todo list (todo_read, todo_write) — use this to break down complex tasks into steps, track progress, and stay organized
 
-The current chat_id is {chat_id}. Use this when calling send_message, schedule, or todo tools.
+The current chat_id is {chat_id}. Use this when calling send_message, schedule, export_chat, memory(chat scope), or todo tools.
+Permission model: you may only operate on the current chat unless this chat is configured as a control chat. If you try cross-chat operations without permission, tools will return a permission error.
 
 For complex, multi-step tasks: use todo_write to create a plan first, then execute each step and update the todo list as you go. This helps you stay organized and lets the user see progress.
 

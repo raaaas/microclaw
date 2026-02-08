@@ -5,7 +5,7 @@ use tracing::info;
 
 use crate::claude::ToolDefinition;
 
-use super::{schema_object, Tool, ToolResult};
+use super::{auth_context_from_input, authorize_chat_access, schema_object, Tool, ToolResult};
 
 pub struct ReadMemoryTool {
     groups_dir: PathBuf,
@@ -59,6 +59,9 @@ impl Tool for ReadMemoryTool {
                     Some(id) => id,
                     None => return ToolResult::error("Missing 'chat_id' for chat scope".into()),
                 };
+                if let Err(e) = authorize_chat_access(&input, chat_id) {
+                    return ToolResult::error(e);
+                }
                 self.groups_dir.join(chat_id.to_string()).join("CLAUDE.md")
             }
             _ => return ToolResult::error("scope must be 'global' or 'chat'".into()),
@@ -133,12 +136,25 @@ impl Tool for WriteMemoryTool {
         };
 
         let path = match scope {
-            "global" => self.groups_dir.join("CLAUDE.md"),
+            "global" => {
+                if let Some(auth) = auth_context_from_input(&input) {
+                    if !auth.is_control_chat() {
+                        return ToolResult::error(format!(
+                            "Permission denied: chat {} cannot write global memory",
+                            auth.caller_chat_id
+                        ));
+                    }
+                }
+                self.groups_dir.join("CLAUDE.md")
+            }
             "chat" => {
                 let chat_id = match input.get("chat_id").and_then(|v| v.as_i64()) {
                     Some(id) => id,
                     None => return ToolResult::error("Missing 'chat_id' for chat scope".into()),
                 };
+                if let Err(e) = authorize_chat_access(&input, chat_id) {
+                    return ToolResult::error(e);
+                }
                 self.groups_dir.join(chat_id.to_string()).join("CLAUDE.md")
             }
             _ => return ToolResult::error("scope must be 'global' or 'chat'".into()),
@@ -261,6 +277,87 @@ mod tests {
         assert!(!result.is_error);
         assert!(result.content.contains("empty"));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_write_memory_global_denied_for_non_control_chat() {
+        let dir = test_dir();
+        let tool = WriteMemoryTool::new(dir.to_str().unwrap());
+        let result = tool
+            .execute(json!({
+                "scope": "global",
+                "content": "secret",
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": []
+                }
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result.content.contains("Permission denied"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_write_memory_global_allowed_for_control_chat() {
+        let dir = test_dir();
+        let tool = WriteMemoryTool::new(dir.to_str().unwrap());
+        let result = tool
+            .execute(json!({
+                "scope": "global",
+                "content": "global ok",
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": [100]
+                }
+            }))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        let content = std::fs::read_to_string(dir.join("groups").join("CLAUDE.md")).unwrap();
+        assert_eq!(content, "global ok");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_read_memory_chat_permission_denied() {
+        let dir = test_dir();
+        let tool = ReadMemoryTool::new(dir.to_str().unwrap());
+        let result = tool
+            .execute(json!({
+                "scope": "chat",
+                "chat_id": 200,
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": []
+                }
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result.content.contains("Permission denied"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_read_memory_chat_allowed_for_control_chat_cross_chat() {
+        let dir = test_dir();
+        let write_tool = WriteMemoryTool::new(dir.to_str().unwrap());
+        let read_tool = ReadMemoryTool::new(dir.to_str().unwrap());
+        write_tool
+            .execute(json!({"scope": "chat", "chat_id": 200, "content": "chat200"}))
+            .await;
+        let result = read_tool
+            .execute(json!({
+                "scope": "chat",
+                "chat_id": 200,
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": [100]
+                }
+            }))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(result.content, "chat200");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

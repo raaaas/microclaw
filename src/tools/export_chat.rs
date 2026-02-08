@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::json;
 
-use super::{schema_object, Tool, ToolResult};
+use super::{authorize_chat_access, schema_object, Tool, ToolResult};
 use crate::claude::ToolDefinition;
 use crate::db::Database;
 
@@ -52,6 +52,9 @@ impl Tool for ExportChatTool {
             Some(id) => id,
             None => return ToolResult::error("Missing required parameter: chat_id".into()),
         };
+        if let Err(e) = authorize_chat_access(&input, chat_id) {
+            return ToolResult::error(e);
+        }
 
         let messages = match self.db.get_all_messages(chat_id) {
             Ok(msgs) => msgs,
@@ -166,6 +169,64 @@ mod tests {
         assert!(content.contains("hello"));
         assert!(content.contains("**Bot**"));
         assert!(content.contains("hi there!"));
+        cleanup(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_export_chat_permission_denied() {
+        let (db, dir) = test_db();
+        db.store_message(&StoredMessage {
+            id: "m1".into(),
+            chat_id: 200,
+            sender_name: "alice".into(),
+            content: "hello".into(),
+            is_from_bot: false,
+            timestamp: "2024-01-01T00:00:01Z".into(),
+        })
+        .unwrap();
+
+        let tool = ExportChatTool::new(db, dir.to_str().unwrap());
+        let result = tool
+            .execute(json!({
+                "chat_id": 200,
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": []
+                }
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result.content.contains("Permission denied"));
+        cleanup(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_export_chat_allowed_for_control_chat_cross_chat() {
+        let (db, dir) = test_db();
+        db.store_message(&StoredMessage {
+            id: "m1".into(),
+            chat_id: 200,
+            sender_name: "alice".into(),
+            content: "hello".into(),
+            is_from_bot: false,
+            timestamp: "2024-01-01T00:00:01Z".into(),
+        })
+        .unwrap();
+        let out_path = dir.join("control_export.md");
+        let tool = ExportChatTool::new(db, dir.to_str().unwrap());
+        let result = tool
+            .execute(json!({
+                "chat_id": 200,
+                "path": out_path.to_str().unwrap(),
+                "__microclaw_auth": {
+                    "caller_chat_id": 100,
+                    "control_chat_ids": [100]
+                }
+            }))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        let content = std::fs::read_to_string(out_path).unwrap();
+        assert!(content.contains("hello"));
         cleanup(&dir);
     }
 }
