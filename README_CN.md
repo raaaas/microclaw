@@ -172,15 +172,9 @@ Todo 列表存储在 `microclaw.data/runtime/groups/{chat_id}/TODO.json`，跨�
 curl -fsSL https://microclaw.ai/install.sh | bash
 ```
 
-安装脚本会按顺序尝试：
+安装脚本仅执行一种方式：
 - 从最新 GitHub Release 下载匹配平台的预编译二进制
-- 在 macOS 上回退到 Homebrew 安装
-- 回退到 `cargo install` 源码编译安装
-
-强制只使用 GitHub Release（不回退 Homebrew/Cargo）：
-```sh
-curl -fsSL https://microclaw.ai/install.sh | MICROCLAW_INSTALL_METHOD=release bash
-```
+- 不在 `install.sh` 内回退到 Homebrew/Cargo（请使用下面的独立方式）
 
 ### Homebrew (macOS)
 

@@ -173,15 +173,9 @@ Manage tasks with natural language:
 curl -fsSL https://microclaw.ai/install.sh | bash
 ```
 
-This installer tries, in order:
-- Download matching prebuilt binary from the latest GitHub release
-- Fallback to Homebrew on macOS
-- Fallback to `cargo install` from source
-
-Force GitHub Release only (no Homebrew/Cargo fallback):
-```sh
-curl -fsSL https://microclaw.ai/install.sh | MICROCLAW_INSTALL_METHOD=release bash
-```
+This installer only does one thing:
+- Download and install the matching prebuilt binary from the latest GitHub release
+- It does not fallback to Homebrew/Cargo inside `install.sh` (use separate methods below)
 
 ### Homebrew (macOS)
 
