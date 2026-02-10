@@ -48,13 +48,28 @@ fn default_control_chat_ids() -> Vec<i64> {
     Vec::new()
 }
 fn default_web_enabled() -> bool {
-    false
+    true
 }
 fn default_web_host() -> String {
     "127.0.0.1".into()
 }
 fn default_web_port() -> u16 {
-    3900
+    10961
+}
+fn default_web_max_inflight_per_session() -> usize {
+    2
+}
+fn default_web_max_requests_per_window() -> usize {
+    8
+}
+fn default_web_rate_window_seconds() -> u64 {
+    10
+}
+fn default_web_run_history_limit() -> usize {
+    512
+}
+fn default_web_session_idle_ttl_seconds() -> u64 {
+    300
 }
 fn is_local_web_host(host: &str) -> bool {
     let h = host.trim().to_ascii_lowercase();
@@ -119,6 +134,16 @@ pub struct Config {
     pub web_port: u16,
     #[serde(default)]
     pub web_auth_token: Option<String>,
+    #[serde(default = "default_web_max_inflight_per_session")]
+    pub web_max_inflight_per_session: usize,
+    #[serde(default = "default_web_max_requests_per_window")]
+    pub web_max_requests_per_window: usize,
+    #[serde(default = "default_web_rate_window_seconds")]
+    pub web_rate_window_seconds: u64,
+    #[serde(default = "default_web_run_history_limit")]
+    pub web_run_history_limit: usize,
+    #[serde(default = "default_web_session_idle_ttl_seconds")]
+    pub web_session_idle_ttl_seconds: u64,
 }
 
 impl Config {
@@ -223,6 +248,21 @@ impl Config {
                 "web_auth_token is required when web_enabled=true and web_host is not local".into(),
             ));
         }
+        if self.web_max_inflight_per_session == 0 {
+            self.web_max_inflight_per_session = default_web_max_inflight_per_session();
+        }
+        if self.web_max_requests_per_window == 0 {
+            self.web_max_requests_per_window = default_web_max_requests_per_window();
+        }
+        if self.web_rate_window_seconds == 0 {
+            self.web_rate_window_seconds = default_web_rate_window_seconds();
+        }
+        if self.web_run_history_limit == 0 {
+            self.web_run_history_limit = default_web_run_history_limit();
+        }
+        if self.web_session_idle_ttl_seconds == 0 {
+            self.web_session_idle_ttl_seconds = default_web_session_idle_ttl_seconds();
+        }
 
         // Validate required fields
         if self.telegram_bot_token.is_empty() && self.discord_bot_token.is_none() {
@@ -277,10 +317,15 @@ mod tests {
             discord_bot_token: None,
             discord_allowed_channels: vec![],
             show_thinking: false,
-            web_enabled: false,
+            web_enabled: true,
             web_host: "127.0.0.1".into(),
-            web_port: 3900,
+            web_port: 10961,
             web_auth_token: None,
+            web_max_inflight_per_session: 2,
+            web_max_requests_per_window: 8,
+            web_rate_window_seconds: 10,
+            web_run_history_limit: 512,
+            web_session_idle_ttl_seconds: 300,
         }
     }
 

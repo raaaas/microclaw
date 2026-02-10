@@ -1,0 +1,124 @@
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at top left, #d1fae5 0%, transparent 38%),
+    radial-gradient(circle at top right, #cffafe 0%, transparent 42%),
+    #f4f8fb;
+}
+
+.app-root {
+  height: 100%;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.app-shell {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 16px;
+}
+
+.sidebar-card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.session-list {
+  height: 100%;
+  border: 1px solid #dde6ed;
+  border-radius: 12px;
+  background: #ffffffcc;
+  padding: 10px;
+}
+
+.chat-card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.messages-panel {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid #dbe6ef;
+  border-radius: 12px;
+  background: #ffffffd9;
+}
+
+.messages-list {
+  padding: 12px;
+}
+
+.message-row {
+  width: 100%;
+  display: flex;
+}
+
+.message-row.bot {
+  justify-content: flex-start;
+}
+
+.message-row.user {
+  justify-content: flex-end;
+}
+
+.message-bubble {
+  width: min(85%, 820px);
+  border: 1px solid #dde5ee;
+}
+
+.message-bubble.bot {
+  background: #f0fdfa;
+}
+
+.message-bubble.user {
+  background: #f8fafc;
+}
+
+.composer-card {
+  border: 1px solid #dbe6ef;
+  border-radius: 12px;
+  background: #ffffffd9;
+  padding: 10px;
+}
+
+.top-bar {
+  border: 1px solid #dbe6ef;
+  border-radius: 12px;
+  background: #ffffffd9;
+  padding: 10px 12px;
+}
+
+.panel-title {
+  letter-spacing: 0.01em;
+}
+
+@media (max-width: 960px) {
+  .app-root {
+    padding: 12px;
+  }
+
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(220px, 30%) 1fr;
+  }
+
+  .session-list {
+    max-height: 220px;
+  }
+}

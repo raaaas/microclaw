@@ -5,6 +5,7 @@ import {
   Box,
   Button,
   Card,
+  Callout,
   Dialog,
   Flex,
   Heading,
@@ -16,6 +17,7 @@ import {
   Theme,
 } from '@radix-ui/themes'
 import '@radix-ui/themes/styles.css'
+import './app.css'
 
 type SessionItem = { session_key: string }
 type MessageItem = {
@@ -29,6 +31,7 @@ type MessageItem = {
 type ConfigPayload = Record<string, unknown>
 
 type StreamHandlers = {
+  onReplayMeta: (payload: Record<string, unknown>) => void
   onStatus: (payload: Record<string, unknown>) => void
   onToolStart: (payload: Record<string, unknown>) => void
   onToolResult: (payload: Record<string, unknown>) => void
@@ -112,6 +115,9 @@ async function streamRun(
     }
 
     switch (eventName) {
+      case 'replay_meta':
+        handlers.onReplayMeta(payload)
+        break
       case 'status':
         handlers.onStatus(payload)
         break
@@ -184,6 +190,7 @@ function App() {
   const [senderName, setSenderName] = useState<string>('web-user')
   const [error, setError] = useState<string>('')
   const [statusText, setStatusText] = useState<string>('')
+  const [replayNotice, setReplayNotice] = useState<string>('')
   const [sending, setSending] = useState<boolean>(false)
   const [configOpen, setConfigOpen] = useState<boolean>(false)
   const [config, setConfig] = useState<ConfigPayload | null>(null)
@@ -192,6 +199,10 @@ function App() {
   const streamAbortRef = useRef<AbortController | null>(null)
 
   const canSend = useMemo(() => messageInput.trim().length > 0 && !sending, [messageInput, sending])
+  const sessionKeys = useMemo(() => {
+    const keys = ['main', ...sessions.map((s) => s.session_key)]
+    return [...new Set(keys)]
+  }, [sessions])
 
   async function loadSessions(): Promise<void> {
     const data = await api<{ sessions?: SessionItem[] }>('/api/sessions', token)
@@ -252,6 +263,7 @@ function App() {
     setSending(true)
     setError('')
     setStatusText('Sending...')
+    setReplayNotice('')
     closeStream()
 
     try {
@@ -271,6 +283,20 @@ function App() {
       streamAbortRef.current = aborter
 
       void streamRun(runId, token, aborter.signal, {
+        onReplayMeta: (data) => {
+          const replayTruncated = data.replay_truncated === true
+          if (!replayTruncated) {
+            setReplayNotice('')
+            return
+          }
+          const oldestEventId =
+            typeof data.oldest_event_id === 'number' ? data.oldest_event_id : null
+          const message =
+            oldestEventId !== null
+              ? `Stream history was truncated. Recovery resumed from event #${oldestEventId}.`
+              : 'Stream history was truncated. Recovery resumed from the earliest available event.'
+          setReplayNotice(message)
+        },
         onStatus: (data) => {
           const message = typeof data.message === 'string' ? data.message : ''
           if (message) setStatusText(message)
@@ -348,7 +374,7 @@ function App() {
       show_thinking: Boolean(data.config?.show_thinking),
       web_enabled: Boolean(data.config?.web_enabled),
       web_host: String(data.config?.web_host || '127.0.0.1'),
-      web_port: Number(data.config?.web_port ?? 3900),
+      web_port: Number(data.config?.web_port ?? 10961),
       web_auth_token: '',
     })
     setConfigOpen(true)
@@ -364,7 +390,7 @@ function App() {
         show_thinking: Boolean(configDraft.show_thinking),
         web_enabled: Boolean(configDraft.web_enabled),
         web_host: String(configDraft.web_host || '127.0.0.1'),
-        web_port: Number(configDraft.web_port || 3900),
+        web_port: Number(configDraft.web_port || 10961),
       }
       const apiKey = String(configDraft.api_key || '').trim()
       const webAuth = String(configDraft.web_auth_token || '').trim()
@@ -402,12 +428,25 @@ function App() {
 
   return (
     <Theme appearance="light" accentColor="teal" grayColor="slate" radius="medium" scaling="100%">
-      <Flex style={{ height: '100%', padding: 16, gap: 16 }}>
-        <Card style={{ width: 280, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <Flex justify="between" align="center">
-            <Heading size="4">MicroClaw</Heading>
+      <Box className="app-root">
+        <Box className="app-shell">
+          <Card className="sidebar-card">
+            <Flex justify="between" align="center">
+              <Box>
+                <Heading className="panel-title" size="5">
+                  MicroClaw
+                </Heading>
+                <Text size="1" color="gray">
+                  Local control panel
+                </Text>
+              </Box>
+              <Badge color={token.trim() ? 'jade' : 'gray'} variant="soft">
+                {token.trim() ? 'Auth Enabled' : 'Local Open'}
+              </Badge>
+            </Flex>
+
             <Button
-              size="1"
+              size="2"
               variant="soft"
               onClick={async () => {
                 try {
@@ -417,109 +456,148 @@ function App() {
                 }
               }}
             >
-              Config
+              Runtime Config
             </Button>
-          </Flex>
-          <Text size="2" color="gray">
-            Local sessions
-          </Text>
-          <TextField.Root value={token} onChange={(e) => setToken(e.target.value)} placeholder="Bearer token (optional)" />
-          <Separator />
-          <ScrollArea type="auto" style={{ height: '100%' }}>
-            <Flex direction="column" gap="2">
-              <Button variant={sessionKey === 'main' ? 'solid' : 'soft'} onClick={() => setSessionKey('main')}>
-                main
-              </Button>
-              {sessions.map((s) => (
-                <Button
-                  key={s.session_key}
-                  variant={sessionKey === s.session_key ? 'solid' : 'soft'}
-                  onClick={() => setSessionKey(s.session_key)}
-                  style={{ justifyContent: 'flex-start' }}
-                >
-                  {s.session_key}
-                </Button>
-              ))}
-            </Flex>
-          </ScrollArea>
-        </Card>
 
-        <Card style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }}>
-          <Flex justify="between" align="center">
-            <Flex align="center" gap="2">
-              <Heading size="4">{sessionKey}</Heading>
-              <Badge color="teal" variant="soft">
-                SSE
-              </Badge>
-            </Flex>
-            <Flex gap="2">
-              <Button
-                size="1"
-                variant="soft"
-                onClick={() => loadHistory(sessionKey).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
-              >
-                Refresh
-              </Button>
-              <Button size="1" variant="soft" color="orange" onClick={onResetSession}>
-                Reset Session
-              </Button>
-            </Flex>
-          </Flex>
-
-          {statusText ? (
-            <Text size="2" color="gray">
-              {statusText}
-            </Text>
-          ) : null}
-          {error ? <Text color="red" size="2">{error}</Text> : null}
-
-          <Box style={{ flex: 1, minHeight: 0 }}>
-            <ScrollArea
-              type="auto"
-              style={{ height: '100%', border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, background: '#ffffff' }}
-            >
-              <Flex direction="column" gap="2">
-                {messages.map((m) => (
-                  <Card key={m.id} style={{ background: m.is_from_bot ? '#f0fdfa' : '#f8fafc' }}>
-                    <Flex justify="between" align="center">
-                      <Text weight="bold" size="2">
-                        {m.sender_name}
-                      </Text>
-                      <Text size="1" color="gray">
-                        {new Date(m.timestamp).toLocaleString()}
-                      </Text>
-                    </Flex>
-                    <Text as="p" size="2" style={{ whiteSpace: 'pre-wrap', marginTop: 6 }}>
-                      {m.content}
-                    </Text>
-                  </Card>
-                ))}
-              </Flex>
-            </ScrollArea>
-          </Box>
-
-          <Flex gap="2">
-            <TextField.Root style={{ width: 180 }} value={senderName} onChange={(e) => setSenderName(e.target.value)} placeholder="sender name" />
-            <TextArea
-              value={messageInput}
-              onChange={(e) => setMessageInput(e.target.value)}
-              placeholder="Type message..."
-              style={{ flex: 1, minHeight: 84 }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault()
-                  void onSend()
-                }
-              }}
+            <TextField.Root
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="Bearer token (optional)"
             />
-            <Button disabled={!canSend} onClick={() => void onSend()}>
-              {sending ? 'Streaming...' : 'Send'}
-            </Button>
-          </Flex>
-          <Text size="1" color="gray">
-            Tip: Ctrl/Cmd + Enter to send
-          </Text>
-        </Card>
+
+            <Separator size="4" />
+
+            <Flex justify="between" align="center">
+              <Text size="2" weight="medium">
+                Sessions
+              </Text>
+              <Badge variant="surface">{sessionKeys.length}</Badge>
+            </Flex>
+            <Box className="session-list">
+              <ScrollArea type="auto" style={{ height: '100%' }}>
+                <Flex direction="column" gap="2">
+                  {sessionKeys.map((key) => (
+                    <Button
+                      key={key}
+                      variant={sessionKey === key ? 'solid' : 'soft'}
+                      onClick={() => setSessionKey(key)}
+                      style={{ justifyContent: 'space-between' }}
+                    >
+                      <Text>{key}</Text>
+                      {sessionKey === key ? <Badge color="teal">Live</Badge> : null}
+                    </Button>
+                  ))}
+                </Flex>
+              </ScrollArea>
+            </Box>
+          </Card>
+
+          <Card className="chat-card">
+            <Box className="top-bar">
+              <Flex justify="between" align="center" gap="2" wrap="wrap">
+                <Flex align="center" gap="2">
+                  <Heading size="4">{sessionKey}</Heading>
+                  <Badge color="teal" variant="soft">
+                    SSE
+                  </Badge>
+                  <Badge color={sending ? 'blue' : 'gray'} variant="surface">
+                    {sending ? 'Streaming' : 'Idle'}
+                  </Badge>
+                </Flex>
+                <Flex gap="2">
+                  <Button
+                    size="1"
+                    variant="soft"
+                    onClick={() =>
+                      loadHistory(sessionKey).catch((e) => setError(e instanceof Error ? e.message : String(e)))
+                    }
+                  >
+                    Refresh
+                  </Button>
+                  <Button size="1" variant="soft" color="orange" onClick={onResetSession}>
+                    Reset Session
+                  </Button>
+                </Flex>
+              </Flex>
+              {statusText ? (
+                <Text size="1" color="gray">
+                  Status: {statusText}
+                </Text>
+              ) : null}
+            </Box>
+
+            {replayNotice ? (
+              <Callout.Root color="orange" size="1" variant="soft">
+                <Callout.Text>{replayNotice}</Callout.Text>
+              </Callout.Root>
+            ) : null}
+            {error ? (
+              <Callout.Root color="red" size="1" variant="soft">
+                <Callout.Text>{error}</Callout.Text>
+              </Callout.Root>
+            ) : null}
+
+            <Box className="messages-panel">
+              <ScrollArea type="auto" style={{ height: '100%' }}>
+                <Flex direction="column" gap="2" className="messages-list">
+                  {messages.map((m) => (
+                    <Box
+                      key={m.id}
+                      className={`message-row ${m.is_from_bot ? 'bot' : 'user'}`}
+                    >
+                      <Card className={`message-bubble ${m.is_from_bot ? 'bot' : 'user'}`}>
+                        <Flex justify="between" align="center" gap="2">
+                          <Badge color={m.is_from_bot ? 'teal' : 'gray'} variant="surface">
+                            {m.sender_name}
+                          </Badge>
+                          <Text size="1" color="gray">
+                            {new Date(m.timestamp).toLocaleTimeString()}
+                          </Text>
+                        </Flex>
+                        <Text as="p" size="2" style={{ whiteSpace: 'pre-wrap', marginTop: 8 }}>
+                          {m.content}
+                        </Text>
+                      </Card>
+                    </Box>
+                  ))}
+                </Flex>
+              </ScrollArea>
+            </Box>
+
+            <Card className="composer-card">
+              <Flex direction="column" gap="2">
+                <Flex gap="2" align="center">
+                  <TextField.Root
+                    style={{ width: 180 }}
+                    value={senderName}
+                    onChange={(e) => setSenderName(e.target.value)}
+                    placeholder="sender name"
+                  />
+                  <Text size="1" color="gray">
+                    Ctrl/Cmd + Enter to send
+                  </Text>
+                </Flex>
+                <Flex gap="2" align="end">
+                  <TextArea
+                    value={messageInput}
+                    onChange={(e) => setMessageInput(e.target.value)}
+                    placeholder="Type message..."
+                    style={{ flex: 1, minHeight: 96 }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault()
+                        void onSend()
+                      }
+                    }}
+                  />
+                  <Button size="2" disabled={!canSend} onClick={() => void onSend()}>
+                    {sending ? 'Streaming...' : 'Send'}
+                  </Button>
+                </Flex>
+              </Flex>
+            </Card>
+          </Card>
+        </Box>
 
         <Dialog.Root open={configOpen} onOpenChange={setConfigOpen}>
           <Dialog.Content maxWidth="640px">
@@ -536,7 +614,7 @@ function App() {
                 <TextField.Root value={String(configDraft.max_tokens || 8192)} onChange={(e) => setConfigDraft({ ...configDraft, max_tokens: e.target.value })} placeholder="max_tokens" />
                 <TextField.Root value={String(configDraft.max_tool_iterations || 100)} onChange={(e) => setConfigDraft({ ...configDraft, max_tool_iterations: e.target.value })} placeholder="max_tool_iterations" />
                 <TextField.Root value={String(configDraft.web_host || '127.0.0.1')} onChange={(e) => setConfigDraft({ ...configDraft, web_host: e.target.value })} placeholder="web_host" />
-                <TextField.Root value={String(configDraft.web_port || 3900)} onChange={(e) => setConfigDraft({ ...configDraft, web_port: e.target.value })} placeholder="web_port" />
+                <TextField.Root value={String(configDraft.web_port || 10961)} onChange={(e) => setConfigDraft({ ...configDraft, web_port: e.target.value })} placeholder="web_port" />
                 <TextField.Root value={String(configDraft.web_auth_token || '')} onChange={(e) => setConfigDraft({ ...configDraft, web_auth_token: e.target.value })} placeholder="web_auth_token (optional)" />
                 <Flex gap="2">
                   <Button variant={Boolean(configDraft.show_thinking) ? 'solid' : 'soft'} onClick={() => setConfigDraft({ ...configDraft, show_thinking: !Boolean(configDraft.show_thinking) })}>show_thinking: {Boolean(configDraft.show_thinking) ? 'on' : 'off'}</Button>
@@ -559,7 +637,7 @@ function App() {
             )}
           </Dialog.Content>
         </Dialog.Root>
-      </Flex>
+      </Box>
     </Theme>
   )
 }

@@ -33,6 +33,11 @@ fn minimal_config() -> Config {
         web_host: "127.0.0.1".into(),
         web_port: 3900,
         web_auth_token: None,
+        web_max_inflight_per_session: 2,
+        web_max_requests_per_window: 8,
+        web_rate_window_seconds: 10,
+        web_run_history_limit: 512,
+        web_session_idle_ttl_seconds: 300,
     }
 }
 

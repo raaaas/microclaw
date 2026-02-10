@@ -16,6 +16,7 @@ use serde_json::json;
 use tokio::sync::{broadcast, Mutex};
 use tracing::{error, info};
 
+use crate::channel::deliver_and_store_bot_message;
 use crate::config::Config;
 use crate::db::{call_blocking, ChatSummary, StoredMessage};
 use crate::telegram::{process_with_agent, process_with_agent_with_events, AgentEvent, AppState};
@@ -46,7 +47,7 @@ struct RunHub {
 
 #[derive(Clone, Default)]
 struct SessionHub {
-    locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    locks: Arc<Mutex<HashMap<String, SessionLockEntry>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +56,7 @@ struct WebLimits {
     max_requests_per_window: usize,
     rate_window: Duration,
     run_history_limit: usize,
+    session_idle_ttl: Duration,
 }
 
 impl Default for WebLimits {
@@ -64,6 +66,19 @@ impl Default for WebLimits {
             max_requests_per_window: 8,
             rate_window: Duration::from_secs(10),
             run_history_limit: 512,
+            session_idle_ttl: Duration::from_secs(300),
+        }
+    }
+}
+
+impl WebLimits {
+    fn from_config(cfg: &Config) -> Self {
+        Self {
+            max_inflight_per_session: cfg.web_max_inflight_per_session,
+            max_requests_per_window: cfg.web_max_requests_per_window,
+            rate_window: Duration::from_secs(cfg.web_rate_window_seconds),
+            run_history_limit: cfg.web_run_history_limit,
+            session_idle_ttl: Duration::from_secs(cfg.web_session_idle_ttl_seconds),
         }
     }
 }
@@ -73,10 +88,25 @@ struct RequestHub {
     sessions: Arc<Mutex<HashMap<String, SessionQuota>>>,
 }
 
-#[derive(Default)]
 struct SessionQuota {
     inflight: usize,
     recent: VecDeque<Instant>,
+    last_touch: Instant,
+}
+
+impl Default for SessionQuota {
+    fn default() -> Self {
+        Self {
+            inflight: 0,
+            recent: VecDeque::new(),
+            last_touch: Instant::now(),
+        }
+    }
+}
+
+struct SessionLockEntry {
+    lock: Arc<tokio::sync::Mutex<()>>,
+    last_touch: Instant,
 }
 
 #[derive(Clone)]
@@ -128,16 +158,27 @@ impl RunHub {
         &self,
         run_id: &str,
         last_event_id: Option<u64>,
-    ) -> Option<(broadcast::Receiver<RunEvent>, Vec<RunEvent>, bool)> {
+    ) -> Option<(broadcast::Receiver<RunEvent>, Vec<RunEvent>, bool, bool, Option<u64>)> {
         let guard = self.channels.lock().await;
         let channel = guard.get(run_id)?;
+        let oldest_event_id = channel.history.front().map(|e| e.id);
+        let replay_truncated = matches!(
+            (last_event_id, oldest_event_id),
+            (Some(last), Some(oldest)) if last.saturating_add(1) < oldest
+        );
         let replay = channel
             .history
             .iter()
             .filter(|e| last_event_id.is_none_or(|id| e.id > id))
             .cloned()
             .collect::<Vec<_>>();
-        Some((channel.sender.subscribe(), replay, channel.done))
+        Some((
+            channel.sender.subscribe(),
+            replay,
+            channel.done,
+            replay_truncated,
+            oldest_event_id,
+        ))
     }
 
     async fn status(&self, run_id: &str) -> Option<(bool, u64)> {
@@ -157,11 +198,25 @@ impl RunHub {
 }
 
 impl SessionHub {
-    async fn lock_for(&self, session_key: &str) -> Arc<tokio::sync::Mutex<()>> {
+    async fn lock_for(&self, session_key: &str, limits: &WebLimits) -> Arc<tokio::sync::Mutex<()>> {
+        let now = Instant::now();
         let mut guard = self.locks.lock().await;
+        guard.retain(|key, entry| {
+            if key == session_key {
+                return true;
+            }
+            let stale = now.duration_since(entry.last_touch) > limits.session_idle_ttl;
+            // Remove only stale + uncontended locks.
+            !(stale && Arc::strong_count(&entry.lock) == 1 && entry.lock.try_lock().is_ok())
+        });
         guard
             .entry(session_key.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .and_modify(|entry| entry.last_touch = now)
+            .or_insert_with(|| SessionLockEntry {
+                lock: Arc::new(tokio::sync::Mutex::new(())),
+                last_touch: now,
+            })
+            .lock
             .clone()
     }
 }
@@ -171,6 +226,7 @@ impl RequestHub {
         let now = Instant::now();
         let mut guard = self.sessions.lock().await;
         let quota = guard.entry(session_key.to_string()).or_default();
+        quota.last_touch = now;
 
         while let Some(ts) = quota.recent.front() {
             if now.duration_since(*ts) > limits.rate_window {
@@ -192,14 +248,26 @@ impl RequestHub {
         Ok(())
     }
 
-    async fn end(&self, session_key: &str) {
+    async fn end_with_limits(&self, session_key: &str, limits: &WebLimits) {
+        let now = Instant::now();
         let mut guard = self.sessions.lock().await;
         if let Some(quota) = guard.get_mut(session_key) {
+            while let Some(ts) = quota.recent.front() {
+                if now.duration_since(*ts) > limits.rate_window {
+                    let _ = quota.recent.pop_front();
+                } else {
+                    break;
+                }
+            }
             quota.inflight = quota.inflight.saturating_sub(1);
+            quota.last_touch = now;
             if quota.inflight == 0 && quota.recent.is_empty() {
                 guard.remove(session_key);
             }
         }
+        guard.retain(|_, quota| {
+            !(quota.inflight == 0 && now.duration_since(quota.last_touch) > limits.session_idle_ttl)
+        });
     }
 }
 
@@ -305,6 +373,11 @@ struct UpdateConfigRequest {
     web_host: Option<String>,
     web_port: Option<u16>,
     web_auth_token: Option<Option<String>>,
+    web_max_inflight_per_session: Option<usize>,
+    web_max_requests_per_window: Option<usize>,
+    web_rate_window_seconds: Option<u64>,
+    web_run_history_limit: Option<usize>,
+    web_session_idle_ttl_seconds: Option<u64>,
 }
 
 fn config_path_for_save() -> Result<PathBuf, (StatusCode, String)> {
@@ -418,6 +491,21 @@ async fn api_update_config(
     if let Some(v) = body.web_auth_token {
         cfg.web_auth_token = v;
     }
+    if let Some(v) = body.web_max_inflight_per_session {
+        cfg.web_max_inflight_per_session = v;
+    }
+    if let Some(v) = body.web_max_requests_per_window {
+        cfg.web_max_requests_per_window = v;
+    }
+    if let Some(v) = body.web_rate_window_seconds {
+        cfg.web_rate_window_seconds = v;
+    }
+    if let Some(v) = body.web_run_history_limit {
+        cfg.web_run_history_limit = v;
+    }
+    if let Some(v) = body.web_session_idle_ttl_seconds {
+        cfg.web_session_idle_ttl_seconds = v;
+    }
 
     if let Err(e) = cfg.post_deserialize() {
         return Err((StatusCode::BAD_REQUEST, e.to_string()));
@@ -512,10 +600,32 @@ async fn api_send(
     Json(body): Json<SendRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_auth(&headers, state.auth_token.as_deref())?;
+    let start = Instant::now();
     let session_key = normalize_session_key(body.session_key.as_deref());
-    state.request_hub.begin(&session_key, &state.limits).await?;
+    if let Err((status, msg)) = state.request_hub.begin(&session_key, &state.limits).await {
+        info!(
+            target: "web",
+            endpoint = "/api/send",
+            session_key = %session_key,
+            status = status.as_u16(),
+            reason = %msg,
+            "Request rejected by limiter"
+        );
+        return Err((status, msg));
+    }
     let result = send_and_store_response(state.clone(), body).await;
-    state.request_hub.end(&session_key).await;
+    state
+        .request_hub
+        .end_with_limits(&session_key, &state.limits)
+        .await;
+    info!(
+        target: "web",
+        endpoint = "/api/send",
+        session_key = %session_key,
+        ok = result.is_ok(),
+        latency_ms = start.elapsed().as_millis(),
+        "Completed request"
+    );
     result
 }
 
@@ -525,6 +635,7 @@ async fn api_send_stream(
     Json(body): Json<SendRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_auth(&headers, state.auth_token.as_deref())?;
+    let start = Instant::now();
 
     let text = body.message.trim().to_string();
     if text.is_empty() {
@@ -532,17 +643,36 @@ async fn api_send_stream(
     }
 
     let session_key = normalize_session_key(body.session_key.as_deref());
-    state.request_hub.begin(&session_key, &state.limits).await?;
+    if let Err((status, msg)) = state.request_hub.begin(&session_key, &state.limits).await {
+        info!(
+            target: "web",
+            endpoint = "/api/send_stream",
+            session_key = %session_key,
+            status = status.as_u16(),
+            reason = %msg,
+            "Request rejected by limiter"
+        );
+        return Err((status, msg));
+    }
 
     let run_id = uuid::Uuid::new_v4().to_string();
     state.run_hub.create(&run_id).await;
     let state_for_task = state.clone();
     let run_id_for_task = run_id.clone();
-    let lock = state.session_hub.lock_for(&session_key).await;
+    let lock = state.session_hub.lock_for(&session_key, &state.limits).await;
     let limits = state.limits.clone();
     let session_key_for_release = session_key.clone();
+    info!(
+        target: "web",
+        endpoint = "/api/send_stream",
+        session_key = %session_key,
+        run_id = %run_id,
+        latency_ms = start.elapsed().as_millis(),
+        "Accepted stream run"
+    );
 
     tokio::spawn(async move {
+        let run_start = Instant::now();
         let _guard = lock.lock().await;
         state_for_task
             .run_hub
@@ -657,7 +787,18 @@ async fn api_send_stream(
         }
         drop(evt_tx);
         let _ = forward.await;
-        state_for_task.request_hub.end(&session_key_for_release).await;
+        state_for_task
+            .request_hub
+            .end_with_limits(&session_key_for_release, &limits)
+            .await;
+        info!(
+            target: "web",
+            endpoint = "/api/send_stream",
+            session_key = %session_key_for_release,
+            run_id = %run_id_for_task,
+            latency_ms = run_start.elapsed().as_millis(),
+            "Stream run finished"
+        );
 
         state_for_task
             .run_hub
@@ -677,16 +818,38 @@ async fn api_stream(
     Query(query): Query<StreamQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     require_auth(&headers, state.auth_token.as_deref())?;
+    let start = Instant::now();
 
-    let Some((mut rx, replay, done)) = state
+    let Some((mut rx, replay, done, replay_truncated, oldest_event_id)) = state
         .run_hub
         .subscribe_with_replay(&query.run_id, query.last_event_id)
         .await
     else {
         return Err((StatusCode::NOT_FOUND, "run not found".into()));
     };
+    info!(
+        target: "web",
+        endpoint = "/api/stream",
+        run_id = %query.run_id,
+        last_event_id = ?query.last_event_id,
+        replay_count = replay.len(),
+        replay_truncated = replay_truncated,
+        oldest_event_id = ?oldest_event_id,
+        latency_ms = start.elapsed().as_millis(),
+        "Stream subscription established"
+    );
 
     let stream = async_stream::stream! {
+        let meta = Event::default().event("replay_meta").data(
+            json!({
+                "replay_truncated": replay_truncated,
+                "oldest_event_id": oldest_event_id,
+                "requested_last_event_id": query.last_event_id,
+            })
+            .to_string()
+        );
+        yield Ok::<Event, std::convert::Infallible>(meta);
+
         let mut finished = false;
         for evt in replay {
             let is_done = evt.event == "done" || evt.event == "error";
@@ -757,7 +920,7 @@ async fn send_and_store_response(
     body: SendRequest,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let session_key = normalize_session_key(body.session_key.as_deref());
-    let lock = state.session_hub.lock_for(&session_key).await;
+    let lock = state.session_hub.lock_for(&session_key, &state.limits).await;
     let _guard = lock.lock().await;
     send_and_store_response_with_events(state, body, None).await
 }
@@ -828,19 +991,15 @@ async fn send_and_store_response_with_events(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     };
 
-    let bot_msg = StoredMessage {
-        id: uuid::Uuid::new_v4().to_string(),
+    deliver_and_store_bot_message(
+        &state.app_state.bot,
+        state.app_state.db.clone(),
+        &state.app_state.config.bot_username,
         chat_id,
-        sender_name: state.app_state.config.bot_username.clone(),
-        content: response.clone(),
-        is_from_bot: true,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-    };
-    call_blocking(state.app_state.db.clone(), move |db| {
-        db.store_message(&bot_msg)
-    })
+        &response,
+    )
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok(Json(json!({
         "ok": true,
@@ -870,13 +1029,14 @@ async fn api_reset(
 }
 
 pub async fn start_web_server(state: Arc<AppState>) {
+    let limits = WebLimits::from_config(&state.config);
     let web_state = WebState {
         auth_token: state.config.web_auth_token.clone(),
         app_state: state.clone(),
         run_hub: RunHub::default(),
         session_hub: SessionHub::default(),
         request_hub: RequestHub::default(),
-        limits: WebLimits::default(),
+        limits,
     };
 
     let router = build_router(web_state);
@@ -1065,6 +1225,11 @@ mod tests {
             web_host: "127.0.0.1".into(),
             web_port: 3900,
             web_auth_token: None,
+            web_max_inflight_per_session: 2,
+            web_max_requests_per_window: 8,
+            web_rate_window_seconds: 10,
+            web_run_history_limit: 512,
+            web_session_idle_ttl_seconds: 300,
         };
         let dir = std::env::temp_dir().join(format!("microclaw_webtest_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1163,6 +1328,7 @@ mod tests {
             max_requests_per_window: 10,
             rate_window: Duration::from_secs(10),
             run_history_limit: 128,
+            session_idle_ttl: Duration::from_secs(60),
         };
         let web_state = test_web_state(Box::new(SlowLlm { sleep_ms: 300 }), None, limits);
         let app = build_router(web_state);
@@ -1266,8 +1432,105 @@ mod tests {
             .await
             .unwrap();
         let replay_text = String::from_utf8_lossy(&replay_bytes);
-        // Nothing newer than last_event_id, replay should be empty payload.
-        assert!(replay_text.trim().is_empty());
+        // Nothing newer than last_event_id; only replay metadata should be present.
+        assert!(replay_text.contains("event: replay_meta"));
+        assert!(!replay_text.contains("event: delta"));
+        assert!(!replay_text.contains("event: done"));
+    }
+
+    #[tokio::test]
+    async fn test_reconnect_from_last_event_id_gets_non_empty_replay() {
+        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
+        let app = build_router(web_state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/send_stream")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"session_key":"main","sender_name":"u","message":"reconnect"}"#,
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let run_id = v.get("run_id").and_then(|x| x.as_str()).unwrap();
+
+        let req_stream = Request::builder()
+            .method("GET")
+            .uri(format!("/api/stream?run_id={run_id}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp_stream = app.clone().oneshot(req_stream).await.unwrap();
+        assert_eq!(resp_stream.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp_stream.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+
+        let mut ids = Vec::new();
+        for line in text.lines() {
+            if let Some(rest) = line.strip_prefix("id: ") {
+                if let Ok(id) = rest.trim().parse::<u64>() {
+                    ids.push(id);
+                }
+            }
+        }
+        assert!(ids.len() >= 2);
+        let reconnect_from = ids[0];
+
+        let req_replay = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/stream?run_id={run_id}&last_event_id={reconnect_from}"
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let replay_resp = app.oneshot(req_replay).await.unwrap();
+        assert_eq!(replay_resp.status(), StatusCode::OK);
+        let replay_bytes = axum::body::to_bytes(replay_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let replay_text = String::from_utf8_lossy(&replay_bytes);
+        assert!(replay_text.contains("event: delta") || replay_text.contains("event: done"));
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_window_recovers() {
+        let limits = WebLimits {
+            max_inflight_per_session: 2,
+            max_requests_per_window: 1,
+            rate_window: Duration::from_millis(200),
+            run_history_limit: 128,
+            session_idle_ttl: Duration::from_secs(60),
+        };
+        let web_state = test_web_state(Box::new(DummyLlm), None, limits);
+        let app = build_router(web_state);
+
+        let mk_req = |msg: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/send")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"session_key":"main","sender_name":"u","message":"{}"}}"#,
+                    msg
+                )))
+                .unwrap()
+        };
+
+        let resp1 = app.clone().oneshot(mk_req("r1")).await.unwrap();
+        assert_eq!(resp1.status(), StatusCode::OK);
+
+        let resp2 = app.clone().oneshot(mk_req("r2")).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        tokio::time::sleep(Duration::from_millis(260)).await;
+        let resp3 = app.oneshot(mk_req("r3")).await.unwrap();
+        assert_eq!(resp3.status(), StatusCode::OK);
     }
 
     #[tokio::test]

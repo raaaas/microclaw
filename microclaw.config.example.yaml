@@ -57,11 +57,21 @@ compact_keep_recent: 20
 
 # Local web UI (optional)
 # Enable built-in local web chat + config panel
-web_enabled: false
+web_enabled: true
 # Bind address for local web UI
 web_host: "127.0.0.1"
 # Port for local web UI
-web_port: 3900
+web_port: 10961
 # Optional bearer token for Web API/UI.
 # If set, requests must send Authorization: Bearer <token>
 # web_auth_token: ""
+# Max in-flight requests per session
+web_max_inflight_per_session: 2
+# Max requests allowed per session in rate window
+web_max_requests_per_window: 8
+# Rate limit window length (seconds)
+web_rate_window_seconds: 10
+# Buffered SSE event history per run for replay
+web_run_history_limit: 512
+# Idle cleanup TTL for web session quota/locks (seconds)
+web_session_idle_ttl_seconds: 300
