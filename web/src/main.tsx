@@ -186,7 +186,7 @@ function writeSessionToUrl(sessionKey: string): void {
 }
 
 function pickLatestSessionKey(items: SessionItem[]): string {
-  if (items.length === 0) return 'main'
+  if (items.length === 0) return makeSessionKey()
 
   const parsed = items
     .map((item) => ({ item, ts: Date.parse(item.last_message_time || '') }))
@@ -194,10 +194,10 @@ function pickLatestSessionKey(items: SessionItem[]): string {
 
   if (parsed.length > 0) {
     parsed.sort((a, b) => b.ts - a.ts)
-    return parsed[0]?.item.session_key || 'main'
+    return parsed[0]?.item.session_key || makeSessionKey()
   }
 
-  return items[items.length - 1]?.session_key || 'main'
+  return items[items.length - 1]?.session_key || makeSessionKey()
 }
 
 if (typeof document !== 'undefined') {
@@ -506,7 +506,7 @@ function App() {
   const [uiTheme, setUiTheme] = useState<UiTheme>(readUiTheme())
   const [sessions, setSessions] = useState<SessionItem[]>([])
   const [extraSessions, setExtraSessions] = useState<SessionItem[]>([])
-  const [sessionKey, setSessionKey] = useState<string>('main')
+  const [sessionKey, setSessionKey] = useState<string>(() => makeSessionKey())
   const [historySeed, setHistorySeed] = useState<ThreadMessageLike[]>([])
   const [historyCountBySession, setHistoryCountBySession] = useState<Record<string, number>>({})
   const [runtimeNonce, setRuntimeNonce] = useState<number>(0)
@@ -538,9 +538,10 @@ function App() {
     }
 
     if (map.size === 0) {
-      map.set('main', {
-        session_key: 'main',
-        label: 'main',
+      const key = makeSessionKey()
+      map.set(key, {
+        session_key: key,
+        label: key,
         chat_id: 0,
         chat_type: 'web',
       })
@@ -793,10 +794,6 @@ function App() {
   }
 
   async function onDeleteSessionByKey(targetSession: string): Promise<void> {
-    if (targetSession === 'main') {
-      setStatusText('Cannot delete main session. Use Clear Context instead.')
-      return
-    }
     try {
       const resp = await api<{ deleted?: boolean }>('/api/delete_session', {
         method: 'POST',
@@ -814,7 +811,9 @@ function App() {
         return next
       })
 
-      const fallback = sessionItems.find((item) => item.session_key !== targetSession)?.session_key || 'main'
+      const fallback =
+        sessionItems.find((item) => item.session_key !== targetSession)?.session_key ||
+        makeSessionKey()
       if (targetSession === sessionKey) {
         setSessionKey(fallback)
         await loadHistory(fallback)

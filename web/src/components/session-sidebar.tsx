@@ -289,22 +289,17 @@ export function SessionSidebar({
           </button>
           <button
             type="button"
-            disabled={menu.key === 'main'}
             className={
-              menu.key === 'main'
-                ? isDark
-                  ? 'mt-1 flex w-full cursor-not-allowed rounded-md px-3 py-2 text-left text-sm text-slate-500'
-                  : 'mt-1 flex w-full cursor-not-allowed rounded-md px-3 py-2 text-left text-sm text-slate-400'
-                : isDark
-                  ? 'mt-1 flex w-full rounded-md px-3 py-2 text-left text-sm text-red-300 hover:bg-red-900/20'
-                  : 'mt-1 flex w-full rounded-md px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50'
+              isDark
+                ? 'mt-1 flex w-full rounded-md px-3 py-2 text-left text-sm text-red-300 hover:bg-red-900/20'
+                : 'mt-1 flex w-full rounded-md px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50'
             }
             onClick={() => {
               onDeleteSession(menu.key)
               setMenu(null)
             }}
           >
-            {menu.key === 'main' ? 'Delete (disabled for main)' : 'Delete'}
+            Delete
           </button>
         </div>
       ) : null}
