@@ -275,21 +275,38 @@ async fn handle_message(
         .map(|u| u.username.clone().unwrap_or_else(|| u.first_name.clone()))
         .unwrap_or_else(|| "Unknown".into());
 
-    let chat_type = match msg.chat.kind {
-        teloxide::types::ChatKind::Private(_) => "private",
-        _ => "group",
+    let (runtime_chat_type, db_chat_type) = match msg.chat.kind {
+        teloxide::types::ChatKind::Private(_) => ("private", "telegram_private"),
+        teloxide::types::ChatKind::Public(teloxide::types::ChatPublic {
+            kind: teloxide::types::PublicChatKind::Group,
+            ..
+        }) => {
+            ("group", "telegram_group")
+        }
+        teloxide::types::ChatKind::Public(teloxide::types::ChatPublic {
+            kind: teloxide::types::PublicChatKind::Supergroup(_),
+            ..
+        }) => {
+            ("group", "telegram_supergroup")
+        }
+        teloxide::types::ChatKind::Public(teloxide::types::ChatPublic {
+            kind: teloxide::types::PublicChatKind::Channel(_),
+            ..
+        }) => {
+            ("group", "telegram_channel")
+        }
     };
 
     let chat_title = msg.chat.title().map(|t| t.to_string());
 
     // Check group allowlist
-    if chat_type == "group"
+    if (db_chat_type == "telegram_group" || db_chat_type == "telegram_supergroup")
         && !state.config.allowed_groups.is_empty()
         && !state.config.allowed_groups.contains(&chat_id)
     {
         // Store message but don't process
         let chat_title_owned = chat_title.clone();
-        let chat_type_owned = chat_type.to_string();
+        let chat_type_owned = db_chat_type.to_string();
         let _ = call_blocking(state.db.clone(), move |db| {
             db.upsert_chat(chat_id, chat_title_owned.as_deref(), &chat_type_owned)
         })
@@ -320,7 +337,7 @@ async fn handle_message(
 
     // Store the chat and message
     let chat_title_owned = chat_title.clone();
-    let chat_type_owned = chat_type.to_string();
+    let chat_type_owned = db_chat_type.to_string();
     let _ = call_blocking(state.db.clone(), move |db| {
         db.upsert_chat(chat_id, chat_title_owned.as_deref(), &chat_type_owned)
     })
@@ -349,7 +366,7 @@ async fn handle_message(
     let _ = call_blocking(state.db.clone(), move |db| db.store_message(&stored)).await;
 
     // Determine if we should respond
-    let should_respond = match chat_type {
+    let should_respond = match runtime_chat_type {
         "private" => true,
         _ => {
             let bot_mention = format!("@{}", state.config.bot_username);
@@ -381,7 +398,16 @@ async fn handle_message(
     });
 
     // Process with Claude
-    match process_with_agent(&state, chat_id, &sender_name, chat_type, None, image_data).await {
+    match process_with_agent(
+        &state,
+        chat_id,
+        &sender_name,
+        runtime_chat_type,
+        None,
+        image_data,
+    )
+    .await
+    {
         Ok(response) => {
             typing_handle.abort();
 

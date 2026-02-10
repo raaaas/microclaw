@@ -92,7 +92,7 @@ impl EventHandler for Handler {
         // Store the chat and message
         let title = format!("discord-{}", msg.channel_id.get());
         let _ = call_blocking(self.app_state.db.clone(), move |db| {
-            db.upsert_chat(channel_id, Some(&title), "private")
+            db.upsert_chat(channel_id, Some(&title), "discord")
         })
         .await;
 

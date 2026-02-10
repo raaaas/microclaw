@@ -242,7 +242,8 @@ impl AnthropicProvider {
         let mut sse = SseEventParser::default();
         let mut stop_reason: Option<String> = None;
         let mut usage: Option<Usage> = None;
-        let mut text_blocks: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
+        let mut text_blocks: std::collections::HashMap<usize, String> =
+            std::collections::HashMap::new();
         let mut tool_blocks: std::collections::HashMap<usize, StreamToolUseBlock> =
             std::collections::HashMap::new();
         let mut ordered_indexes: Vec<usize> = Vec::new();
@@ -357,8 +358,7 @@ fn process_anthropic_stream_event(
                                 .and_then(|s| s.as_str())
                                 .unwrap_or_default()
                                 .to_string();
-                            let input =
-                                block.get("input").cloned().unwrap_or_else(|| json!({}));
+                            let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
                             let input_json = if input.is_object()
                                 && input.as_object().is_some_and(|m| m.is_empty())
                             {
@@ -654,7 +654,8 @@ impl LlmProvider for AnthropicProvider {
             stream: Some(true),
         };
 
-        self.send_message_stream_single_pass(&request, text_tx).await
+        self.send_message_stream_single_pass(&request, text_tx)
+            .await
     }
 }
 
@@ -1669,9 +1670,8 @@ mod tests {
     #[test]
     fn test_sse_event_parser_multiline_data() {
         let mut parser = SseEventParser::default();
-        let events = parser.push_chunk(
-            "event: message\n: keep-alive\ndata: {\"type\":\"x\",\ndata: \"v\":1}\n\n",
-        );
+        let events = parser
+            .push_chunk("event: message\n: keep-alive\ndata: {\"type\":\"x\",\ndata: \"v\":1}\n\n");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0], "{\"type\":\"x\",\n\"v\":1}");
     }

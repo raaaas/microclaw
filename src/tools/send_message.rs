@@ -1,13 +1,15 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::json;
 use teloxide::prelude::*;
+use teloxide::types::InputFile;
 
 use super::{authorize_chat_access, schema_object, Tool, ToolResult};
 use crate::channel::{deliver_and_store_bot_message, enforce_channel_policy};
 use crate::claude::ToolDefinition;
-use crate::db::Database;
+use crate::db::{call_blocking, Database, StoredMessage};
 
 pub struct SendMessageTool {
     bot: Bot,
@@ -44,9 +46,17 @@ impl Tool for SendMessageTool {
                     "text": {
                         "type": "string",
                         "description": "The message text to send"
+                    },
+                    "attachment_path": {
+                        "type": "string",
+                        "description": "Optional local file path to send as Telegram document"
+                    },
+                    "caption": {
+                        "type": "string",
+                        "description": "Optional caption used when sending attachment"
                     }
                 }),
-                &["chat_id", "text"],
+                &["chat_id"],
             ),
         }
     }
@@ -56,10 +66,26 @@ impl Tool for SendMessageTool {
             Some(id) => id,
             None => return ToolResult::error("Missing required parameter: chat_id".into()),
         };
-        let text = match input.get("text").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => return ToolResult::error("Missing required parameter: text".into()),
-        };
+        let text = input
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let attachment_path = input
+            .get("attachment_path")
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let caption = input
+            .get("caption")
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+
+        if text.is_empty() && attachment_path.is_none() {
+            return ToolResult::error("Provide text and/or attachment_path".into());
+        }
 
         if let Err(e) = authorize_chat_access(&input, chat_id) {
             return ToolResult::error(e);
@@ -69,17 +95,90 @@ impl Tool for SendMessageTool {
             return ToolResult::error(e);
         }
 
-        match deliver_and_store_bot_message(
-            &self.bot,
-            self.db.clone(),
-            &self.bot_username,
-            chat_id,
-            text,
-        )
-        .await
-        {
-            Ok(_) => ToolResult::success("Message sent successfully.".into()),
-            Err(e) => ToolResult::error(e),
+        if let Some(path) = attachment_path {
+            let chat_type =
+                match call_blocking(self.db.clone(), move |db| db.get_chat_type(chat_id)).await {
+                    Ok(v) => v,
+                    Err(e) => return ToolResult::error(format!("Failed to read chat type: {e}")),
+                };
+
+            let is_telegram = matches!(
+                chat_type.as_deref(),
+                Some("telegram_private")
+                    | Some("telegram_group")
+                    | Some("telegram_supergroup")
+                    | Some("telegram_channel")
+                    | Some("private")
+                    | Some("group")
+                    | Some("supergroup")
+                    | Some("channel")
+            );
+
+            if !is_telegram {
+                return ToolResult::error(
+                    "attachment sending is currently supported for Telegram chats only".into(),
+                );
+            }
+
+            let file_path = PathBuf::from(&path);
+            if !file_path.is_file() {
+                return ToolResult::error(format!(
+                    "attachment_path not found or not a file: {path}"
+                ));
+            }
+
+            let used_caption = caption.or_else(|| {
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text.clone())
+                }
+            });
+
+            let mut req = self
+                .bot
+                .send_document(ChatId(chat_id), InputFile::file(file_path.clone()));
+            if let Some(c) = &used_caption {
+                req = req.caption(c.clone());
+            }
+
+            if let Err(e) = req.await {
+                return ToolResult::error(format!("Failed to send attachment: {e}"));
+            }
+
+            let content = match used_caption {
+                Some(c) => format!("[attachment:{}] {}", file_path.display(), c),
+                None => format!("[attachment:{}]", file_path.display()),
+            };
+            let bot_name = self.bot_username.clone();
+            let msg = StoredMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                chat_id,
+                sender_name: bot_name,
+                content,
+                is_from_bot: true,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            };
+            if let Err(e) = call_blocking(self.db.clone(), move |db| db.store_message(&msg)).await {
+                return ToolResult::error(format!(
+                    "Attachment sent but failed to store message: {e}"
+                ));
+            }
+
+            ToolResult::success("Attachment sent successfully.".into())
+        } else {
+            match deliver_and_store_bot_message(
+                &self.bot,
+                self.db.clone(),
+                &self.bot_username,
+                chat_id,
+                &text,
+            )
+            .await
+            {
+                Ok(_) => ToolResult::success("Message sent successfully.".into()),
+                Err(e) => ToolResult::error(e),
+            }
         }
     }
 }
@@ -164,6 +263,46 @@ mod tests {
         assert!(result
             .content
             .contains("web chats cannot operate on other chats"));
+        cleanup(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_send_message_requires_text_or_attachment() {
+        let (db, dir) = test_db();
+        let tool = SendMessageTool::new(Bot::new("123456:TEST_TOKEN"), db, "bot".into());
+        let result = tool
+            .execute(json!({
+                "chat_id": 999,
+                "text": "   "
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result
+            .content
+            .contains("Provide text and/or attachment_path"));
+        cleanup(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_send_attachment_non_telegram_rejected_without_network() {
+        let (db, dir) = test_db();
+        db.upsert_chat(999, Some("web-main"), "web").unwrap();
+
+        let attachment = dir.join("sample.txt");
+        std::fs::write(&attachment, "hello").unwrap();
+
+        let tool = SendMessageTool::new(Bot::new("123456:TEST_TOKEN"), db, "bot".into());
+        let result = tool
+            .execute(json!({
+                "chat_id": 999,
+                "attachment_path": attachment.to_string_lossy(),
+                "caption": "test"
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result
+            .content
+            .contains("currently supported for Telegram chats only"));
         cleanup(&dir);
     }
 }

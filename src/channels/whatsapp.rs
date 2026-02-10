@@ -175,7 +175,7 @@ async fn process_webhook(state: &WhatsAppState, payload: WebhookPayload) -> anyh
                 // Store message in DB
                 let sender_name_for_chat = sender_name.clone();
                 let _ = call_blocking(state.app_state.db.clone(), move |db| {
-                    db.upsert_chat(chat_id, Some(&sender_name_for_chat), "private")
+                    db.upsert_chat(chat_id, Some(&sender_name_for_chat), "whatsapp")
                 })
                 .await;
                 let stored = StoredMessage {

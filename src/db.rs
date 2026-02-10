@@ -626,7 +626,10 @@ impl Database {
 
         affected += tx.execute("DELETE FROM sessions WHERE chat_id = ?1", params![chat_id])?;
         affected += tx.execute("DELETE FROM messages WHERE chat_id = ?1", params![chat_id])?;
-        affected += tx.execute("DELETE FROM scheduled_tasks WHERE chat_id = ?1", params![chat_id])?;
+        affected += tx.execute(
+            "DELETE FROM scheduled_tasks WHERE chat_id = ?1",
+            params![chat_id],
+        )?;
         affected += tx.execute("DELETE FROM chats WHERE chat_id = ?1", params![chat_id])?;
 
         tx.commit()?;

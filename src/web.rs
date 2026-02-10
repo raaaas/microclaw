@@ -158,7 +158,13 @@ impl RunHub {
         &self,
         run_id: &str,
         last_event_id: Option<u64>,
-    ) -> Option<(broadcast::Receiver<RunEvent>, Vec<RunEvent>, bool, bool, Option<u64>)> {
+    ) -> Option<(
+        broadcast::Receiver<RunEvent>,
+        Vec<RunEvent>,
+        bool,
+        bool,
+        Option<u64>,
+    )> {
         let guard = self.channels.lock().await;
         let channel = guard.get(run_id)?;
         let oldest_event_id = channel.history.front().map(|e| e.id);
@@ -222,7 +228,11 @@ impl SessionHub {
 }
 
 impl RequestHub {
-    async fn begin(&self, session_key: &str, limits: &WebLimits) -> Result<(), (StatusCode, String)> {
+    async fn begin(
+        &self,
+        session_key: &str,
+        limits: &WebLimits,
+    ) -> Result<(), (StatusCode, String)> {
         let now = Instant::now();
         let mut guard = self.sessions.lock().await;
         let quota = guard.entry(session_key.to_string()).or_default();
@@ -237,10 +247,16 @@ impl RequestHub {
         }
 
         if quota.inflight >= limits.max_inflight_per_session {
-            return Err((StatusCode::TOO_MANY_REQUESTS, "too many concurrent requests for session".into()));
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many concurrent requests for session".into(),
+            ));
         }
         if quota.recent.len() >= limits.max_requests_per_window {
-            return Err((StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded for session".into()));
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate limit exceeded for session".into(),
+            ));
         }
 
         quota.inflight += 1;
@@ -525,14 +541,36 @@ async fn api_update_config(
 }
 
 fn map_chat_to_session(chat: ChatSummary) -> SessionItem {
-    let fallback = format!("{}:{}", chat.chat_type, chat.chat_id);
+    let source = match chat.chat_type.as_str() {
+        "web" => "web",
+        "discord" => "discord",
+        "whatsapp" => "whatsapp",
+        "telegram_private" | "telegram_group" | "telegram_supergroup" | "telegram_channel" => {
+            "telegram"
+        }
+        // Backward compatibility for old rows written before source-specific chat_type.
+        "private" | "group" | "supergroup" | "channel" => {
+            if chat
+                .chat_title
+                .as_deref()
+                .is_some_and(|t| t.starts_with("discord-"))
+            {
+                "discord"
+            } else {
+                "telegram"
+            }
+        }
+        _ => chat.chat_type.as_str(),
+    };
+
+    let fallback = format!("{}:{}", source, chat.chat_id);
     let label = chat.chat_title.clone().unwrap_or(fallback);
 
     SessionItem {
         session_key: format!("chat:{}", chat.chat_id),
         label,
         chat_id: chat.chat_id,
-        chat_type: chat.chat_type,
+        chat_type: source.to_string(),
         last_message_time: chat.last_message_time,
         last_message_preview: chat.last_message_preview,
     }
@@ -545,7 +583,8 @@ fn parse_chat_id_from_session_key(session_key: &str) -> Option<i64> {
 }
 
 fn resolve_chat_id(session_key: &str) -> i64 {
-    parse_chat_id_from_session_key(session_key).unwrap_or_else(|| session_key_to_chat_id(session_key))
+    parse_chat_id_from_session_key(session_key)
+        .unwrap_or_else(|| session_key_to_chat_id(session_key))
 }
 
 async fn api_sessions(
@@ -554,11 +593,9 @@ async fn api_sessions(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_auth(&headers, state.auth_token.as_deref())?;
 
-    let chats = call_blocking(state.app_state.db.clone(), |db| {
-        db.get_recent_chats(400)
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let chats = call_blocking(state.app_state.db.clone(), |db| db.get_recent_chats(400))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let sessions = chats
         .into_iter()
@@ -673,7 +710,10 @@ async fn api_send_stream(
     state.run_hub.create(&run_id).await;
     let state_for_task = state.clone();
     let run_id_for_task = run_id.clone();
-    let lock = state.session_hub.lock_for(&session_key, &state.limits).await;
+    let lock = state
+        .session_hub
+        .lock_for(&session_key, &state.limits)
+        .await;
     let limits = state.limits.clone();
     let session_key_for_release = session_key.clone();
     info!(
@@ -934,7 +974,10 @@ async fn send_and_store_response(
     body: SendRequest,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let session_key = normalize_session_key(body.session_key.as_deref());
-    let lock = state.session_hub.lock_for(&session_key, &state.limits).await;
+    let lock = state
+        .session_hub
+        .lock_for(&session_key, &state.limits)
+        .await;
     let _guard = lock.lock().await;
     send_and_store_response_with_events(state, body, None).await
 }

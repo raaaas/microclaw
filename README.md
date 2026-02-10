@@ -76,7 +76,7 @@ For a deeper dive into the architecture and design decisions, read: **[Building 
 | `write_memory` | Write persistent CLAUDE.md memory |
 | `web_search` | Search the web via DuckDuckGo (returns titles, URLs, snippets) |
 | `web_fetch` | Fetch a URL and return plain text (HTML stripped, max 20KB) |
-| `send_message` | Send a Telegram message mid-conversation (progress updates, multi-part responses) |
+| `send_message` | Send mid-conversation messages; supports Telegram attachments via `attachment_path` + optional `caption` |
 | `schedule_task` | Schedule a recurring (cron) or one-time task |
 | `list_scheduled_tasks` | List all active/paused tasks for a chat |
 | `pause_scheduled_task` | Pause a scheduled task |
@@ -192,6 +192,14 @@ cd microclaw
 cargo build --release
 cp target/release/microclaw /usr/local/bin/
 ```
+
+## Local Web UI (cross-channel history)
+
+When `web_enabled: true`, MicroClaw serves a local Web UI (default `http://127.0.0.1:10961`).
+
+- Session list includes chats from all channels stored in SQLite (`telegram`, `whatsapp`, `discord`, `web`)
+- You can review and manage history (refresh / clear context / delete)
+- Non-web channels are read-only in Web UI by default (send from source channel)
 
 ## Release
 
