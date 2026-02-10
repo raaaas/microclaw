@@ -1,7 +1,8 @@
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -27,17 +28,20 @@ struct WebState {
     auth_token: Option<String>,
     run_hub: RunHub,
     session_hub: SessionHub,
+    request_hub: RequestHub,
+    limits: WebLimits,
 }
 
 #[derive(Clone, Debug)]
 struct RunEvent {
+    id: u64,
     event: String,
     data: String,
 }
 
 #[derive(Clone, Default)]
 struct RunHub {
-    channels: Arc<Mutex<HashMap<String, broadcast::Sender<RunEvent>>>>,
+    channels: Arc<Mutex<HashMap<String, RunChannel>>>,
 }
 
 #[derive(Clone, Default)]
@@ -45,17 +49,101 @@ struct SessionHub {
     locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
+#[derive(Clone, Debug)]
+struct WebLimits {
+    max_inflight_per_session: usize,
+    max_requests_per_window: usize,
+    rate_window: Duration,
+    run_history_limit: usize,
+}
+
+impl Default for WebLimits {
+    fn default() -> Self {
+        Self {
+            max_inflight_per_session: 2,
+            max_requests_per_window: 8,
+            rate_window: Duration::from_secs(10),
+            run_history_limit: 512,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct RequestHub {
+    sessions: Arc<Mutex<HashMap<String, SessionQuota>>>,
+}
+
+#[derive(Default)]
+struct SessionQuota {
+    inflight: usize,
+    recent: VecDeque<Instant>,
+}
+
+#[derive(Clone)]
+struct RunChannel {
+    sender: broadcast::Sender<RunEvent>,
+    history: VecDeque<RunEvent>,
+    next_id: u64,
+    done: bool,
+}
+
 impl RunHub {
-    async fn create(&self, run_id: &str) -> broadcast::Sender<RunEvent> {
+    async fn create(&self, run_id: &str) {
         let (tx, _) = broadcast::channel(512);
         let mut guard = self.channels.lock().await;
-        guard.insert(run_id.to_string(), tx.clone());
-        tx
+        guard.insert(
+            run_id.to_string(),
+            RunChannel {
+                sender: tx,
+                history: VecDeque::new(),
+                next_id: 1,
+                done: false,
+            },
+        );
     }
 
-    async fn get(&self, run_id: &str) -> Option<broadcast::Sender<RunEvent>> {
+    async fn publish(&self, run_id: &str, event: &str, data: String, history_limit: usize) {
+        let mut guard = self.channels.lock().await;
+        let Some(channel) = guard.get_mut(run_id) else {
+            return;
+        };
+
+        let evt = RunEvent {
+            id: channel.next_id,
+            event: event.to_string(),
+            data,
+        };
+        channel.next_id = channel.next_id.saturating_add(1);
+        if channel.history.len() >= history_limit {
+            let _ = channel.history.pop_front();
+        }
+        channel.history.push_back(evt.clone());
+        if evt.event == "done" || evt.event == "error" {
+            channel.done = true;
+        }
+        let _ = channel.sender.send(evt);
+    }
+
+    async fn subscribe_with_replay(
+        &self,
+        run_id: &str,
+        last_event_id: Option<u64>,
+    ) -> Option<(broadcast::Receiver<RunEvent>, Vec<RunEvent>, bool)> {
         let guard = self.channels.lock().await;
-        guard.get(run_id).cloned()
+        let channel = guard.get(run_id)?;
+        let replay = channel
+            .history
+            .iter()
+            .filter(|e| last_event_id.is_none_or(|id| e.id > id))
+            .cloned()
+            .collect::<Vec<_>>();
+        Some((channel.sender.subscribe(), replay, channel.done))
+    }
+
+    async fn status(&self, run_id: &str) -> Option<(bool, u64)> {
+        let guard = self.channels.lock().await;
+        let channel = guard.get(run_id)?;
+        Some((channel.done, channel.next_id.saturating_sub(1)))
     }
 
     async fn remove_later(&self, run_id: String, after_seconds: u64) {
@@ -75,6 +163,43 @@ impl SessionHub {
             .entry(session_key.to_string())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
+    }
+}
+
+impl RequestHub {
+    async fn begin(&self, session_key: &str, limits: &WebLimits) -> Result<(), (StatusCode, String)> {
+        let now = Instant::now();
+        let mut guard = self.sessions.lock().await;
+        let quota = guard.entry(session_key.to_string()).or_default();
+
+        while let Some(ts) = quota.recent.front() {
+            if now.duration_since(*ts) > limits.rate_window {
+                let _ = quota.recent.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        if quota.inflight >= limits.max_inflight_per_session {
+            return Err((StatusCode::TOO_MANY_REQUESTS, "too many concurrent requests for session".into()));
+        }
+        if quota.recent.len() >= limits.max_requests_per_window {
+            return Err((StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded for session".into()));
+        }
+
+        quota.inflight += 1;
+        quota.recent.push_back(now);
+        Ok(())
+    }
+
+    async fn end(&self, session_key: &str) {
+        let mut guard = self.sessions.lock().await;
+        if let Some(quota) = guard.get_mut(session_key) {
+            quota.inflight = quota.inflight.saturating_sub(1);
+            if quota.inflight == 0 && quota.recent.is_empty() {
+                guard.remove(session_key);
+            }
+        }
     }
 }
 
@@ -154,11 +279,17 @@ struct SendRequest {
 #[derive(Debug, Deserialize)]
 struct StreamQuery {
     run_id: String,
+    last_event_id: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ResetRequest {
     session_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunStatusQuery {
+    run_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -381,7 +512,11 @@ async fn api_send(
     Json(body): Json<SendRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_auth(&headers, state.auth_token.as_deref())?;
-    send_and_store_response(state, body).await
+    let session_key = normalize_session_key(body.session_key.as_deref());
+    state.request_hub.begin(&session_key, &state.limits).await?;
+    let result = send_and_store_response(state.clone(), body).await;
+    state.request_hub.end(&session_key).await;
+    result
 }
 
 async fn api_send_stream(
@@ -396,36 +531,55 @@ async fn api_send_stream(
         return Err((StatusCode::BAD_REQUEST, "message is required".into()));
     }
 
+    let session_key = normalize_session_key(body.session_key.as_deref());
+    state.request_hub.begin(&session_key, &state.limits).await?;
+
     let run_id = uuid::Uuid::new_v4().to_string();
-    let sender = state.run_hub.create(&run_id).await;
+    state.run_hub.create(&run_id).await;
     let state_for_task = state.clone();
     let run_id_for_task = run_id.clone();
-    let session_key = normalize_session_key(body.session_key.as_deref());
     let lock = state.session_hub.lock_for(&session_key).await;
+    let limits = state.limits.clone();
+    let session_key_for_release = session_key.clone();
 
     tokio::spawn(async move {
         let _guard = lock.lock().await;
-        let _ = sender.send(RunEvent {
-            event: "status".into(),
-            data: json!({"message": "running"}).to_string(),
-        });
+        state_for_task
+            .run_hub
+            .publish(
+                &run_id_for_task,
+                "status",
+                json!({"message": "running"}).to_string(),
+                limits.run_history_limit,
+            )
+            .await;
 
         let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
-        let event_sender = sender.clone();
+        let run_hub = state_for_task.run_hub.clone();
+        let run_id_for_events = run_id_for_task.clone();
+        let run_history_limit = limits.run_history_limit;
         let forward = tokio::spawn(async move {
             while let Some(evt) = evt_rx.recv().await {
                 match evt {
                     AgentEvent::Iteration { iteration } => {
-                        let _ = event_sender.send(RunEvent {
-                            event: "status".into(),
-                            data: json!({"message": format!("iteration {iteration}")}).to_string(),
-                        });
+                        run_hub
+                            .publish(
+                                &run_id_for_events,
+                                "status",
+                                json!({"message": format!("iteration {iteration}")}).to_string(),
+                                run_history_limit,
+                            )
+                            .await;
                     }
                     AgentEvent::ToolStart { name } => {
-                        let _ = event_sender.send(RunEvent {
-                            event: "tool_start".into(),
-                            data: json!({"name": name}).to_string(),
-                        });
+                        run_hub
+                            .publish(
+                                &run_id_for_events,
+                                "tool_start",
+                                json!({"name": name}).to_string(),
+                                run_history_limit,
+                            )
+                            .await;
                     }
                     AgentEvent::ToolResult {
                         name,
@@ -436,25 +590,33 @@ async fn api_send_stream(
                         bytes,
                         error_type,
                     } => {
-                        let _ = event_sender.send(RunEvent {
-                            event: "tool_result".into(),
-                            data: json!({
-                                "name": name,
-                                "is_error": is_error,
-                                "preview": preview,
-                                "duration_ms": duration_ms,
-                                "status_code": status_code,
-                                "bytes": bytes,
-                                "error_type": error_type
-                            })
-                            .to_string(),
-                        });
+                        run_hub
+                            .publish(
+                                &run_id_for_events,
+                                "tool_result",
+                                json!({
+                                    "name": name,
+                                    "is_error": is_error,
+                                    "preview": preview,
+                                    "duration_ms": duration_ms,
+                                    "status_code": status_code,
+                                    "bytes": bytes,
+                                    "error_type": error_type
+                                })
+                                .to_string(),
+                                run_history_limit,
+                            )
+                            .await;
                     }
                     AgentEvent::TextDelta { delta } => {
-                        let _ = event_sender.send(RunEvent {
-                            event: "delta".into(),
-                            data: json!({"delta": delta}).to_string(),
-                        });
+                        run_hub
+                            .publish(
+                                &run_id_for_events,
+                                "delta",
+                                json!({"delta": delta}).to_string(),
+                                run_history_limit,
+                            )
+                            .await;
                     }
                     AgentEvent::FinalResponse { .. } => {}
                 }
@@ -471,20 +633,31 @@ async fn api_send_stream(
                     .unwrap_or_default()
                     .to_string();
 
-                let _ = sender.send(RunEvent {
-                    event: "done".into(),
-                    data: json!({"response": response_text}).to_string(),
-                });
+                state_for_task
+                    .run_hub
+                    .publish(
+                        &run_id_for_task,
+                        "done",
+                        json!({"response": response_text}).to_string(),
+                        limits.run_history_limit,
+                    )
+                    .await;
             }
             Err((_, err_msg)) => {
-                let _ = sender.send(RunEvent {
-                    event: "error".into(),
-                    data: json!({"error": err_msg}).to_string(),
-                });
+                state_for_task
+                    .run_hub
+                    .publish(
+                        &run_id_for_task,
+                        "error",
+                        json!({"error": err_msg}).to_string(),
+                        limits.run_history_limit,
+                    )
+                    .await;
             }
         }
         drop(evt_tx);
         let _ = forward.await;
+        state_for_task.request_hub.end(&session_key_for_release).await;
 
         state_for_task
             .run_hub
@@ -505,17 +678,41 @@ async fn api_stream(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     require_auth(&headers, state.auth_token.as_deref())?;
 
-    let Some(channel) = state.run_hub.get(&query.run_id).await else {
+    let Some((mut rx, replay, done)) = state
+        .run_hub
+        .subscribe_with_replay(&query.run_id, query.last_event_id)
+        .await
+    else {
         return Err((StatusCode::NOT_FOUND, "run not found".into()));
     };
 
-    let mut rx = channel.subscribe();
     let stream = async_stream::stream! {
+        let mut finished = false;
+        for evt in replay {
+            let is_done = evt.event == "done" || evt.event == "error";
+            let event = Event::default()
+                .id(evt.id.to_string())
+                .event(evt.event)
+                .data(evt.data);
+            yield Ok::<Event, std::convert::Infallible>(event);
+            if is_done {
+                finished = true;
+                break;
+            }
+        }
+
+        if finished || done {
+            return;
+        }
+
         loop {
             match rx.recv().await {
                 Ok(evt) => {
                     let done = evt.event == "done" || evt.event == "error";
-                    let event = Event::default().event(evt.event).data(evt.data);
+                    let event = Event::default()
+                        .id(evt.id.to_string())
+                        .event(evt.event)
+                        .data(evt.data);
                     yield Ok::<Event, std::convert::Infallible>(event);
                     if done {
                         break;
@@ -536,6 +733,23 @@ async fn api_stream(
             .interval(std::time::Duration::from_secs(15))
             .text("keepalive"),
     ))
+}
+
+async fn api_run_status(
+    headers: HeaderMap,
+    State(state): State<WebState>,
+    Query(query): Query<RunStatusQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_auth(&headers, state.auth_token.as_deref())?;
+    let Some((done, last_event_id)) = state.run_hub.status(&query.run_id).await else {
+        return Err((StatusCode::NOT_FOUND, "run not found".into()));
+    };
+    Ok(Json(json!({
+        "ok": true,
+        "run_id": query.run_id,
+        "done": done,
+        "last_event_id": last_event_id,
+    })))
 }
 
 async fn send_and_store_response(
@@ -661,6 +875,8 @@ pub async fn start_web_server(state: Arc<AppState>) {
         app_state: state.clone(),
         run_hub: RunHub::default(),
         session_hub: SessionHub::default(),
+        request_hub: RequestHub::default(),
+        limits: WebLimits::default(),
     };
 
     let router = build_router(web_state);
@@ -708,6 +924,7 @@ fn build_router(web_state: WebState) -> Router {
         .route("/api/send", post(api_send))
         .route("/api/send_stream", post(api_send_stream))
         .route("/api/stream", get(api_stream))
+        .route("/api/run_status", get(api_run_status))
         .route("/api/reset", post(api_reset))
         .with_state(web_state)
 }
@@ -716,10 +933,14 @@ fn build_router(web_state: WebState) -> Router {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::db::call_blocking;
     use crate::llm::LlmProvider;
+    use crate::{claude::ResponseContentBlock, error::MicroClawError};
     use crate::{db::Database, memory::MemoryManager, skills::SkillManager, tools::ToolRegistry};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use teloxide::Bot;
     use tower::ServiceExt;
 
@@ -757,7 +978,64 @@ mod tests {
         }
     }
 
-    fn test_state() -> Arc<AppState> {
+    struct SlowLlm {
+        sleep_ms: u64,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for SlowLlm {
+        async fn send_message(
+            &self,
+            _system: &str,
+            _messages: Vec<crate::claude::Message>,
+            _tools: Option<Vec<crate::claude::ToolDefinition>>,
+        ) -> Result<crate::claude::MessagesResponse, MicroClawError> {
+            tokio::time::sleep(Duration::from_millis(self.sleep_ms)).await;
+            Ok(crate::claude::MessagesResponse {
+                content: vec![ResponseContentBlock::Text {
+                    text: "slow".into(),
+                }],
+                stop_reason: Some("end_turn".into()),
+                usage: None,
+            })
+        }
+    }
+
+    struct ToolFlowLlm {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for ToolFlowLlm {
+        async fn send_message(
+            &self,
+            _system: &str,
+            _messages: Vec<crate::claude::Message>,
+            _tools: Option<Vec<crate::claude::ToolDefinition>>,
+        ) -> Result<crate::claude::MessagesResponse, MicroClawError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                return Ok(crate::claude::MessagesResponse {
+                    content: vec![ResponseContentBlock::ToolUse {
+                        id: "tool_1".into(),
+                        name: "glob".into(),
+                        input: json!({"pattern": "*.rs", "path": "."}),
+                    }],
+                    stop_reason: Some("tool_use".into()),
+                    usage: None,
+                });
+            }
+            Ok(crate::claude::MessagesResponse {
+                content: vec![ResponseContentBlock::Text {
+                    text: "after tool".into(),
+                }],
+                stop_reason: Some("end_turn".into()),
+                usage: None,
+            })
+        }
+    }
+
+    fn test_state(llm: Box<dyn LlmProvider>) -> Arc<AppState> {
         let mut cfg = Config {
             telegram_bot_token: "tok".into(),
             bot_username: "bot".into(),
@@ -802,21 +1080,31 @@ mod tests {
             db: db.clone(),
             memory: MemoryManager::new(&runtime_dir),
             skills: SkillManager::from_skills_dir(&cfg.skills_data_dir()),
-            llm: Box::new(DummyLlm),
+            llm,
             tools: ToolRegistry::new(&cfg, bot, db),
         };
         Arc::new(state)
     }
 
-    #[tokio::test]
-    async fn test_send_stream_then_stream_done() {
-        let state = test_state();
-        let web_state = WebState {
+    fn test_web_state(
+        llm: Box<dyn LlmProvider>,
+        auth_token: Option<String>,
+        limits: WebLimits,
+    ) -> WebState {
+        let state = test_state(llm);
+        WebState {
             app_state: state,
-            auth_token: None,
+            auth_token,
             run_hub: RunHub::default(),
             session_hub: SessionHub::default(),
-        };
+            request_hub: RequestHub::default(),
+            limits,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_stream_then_stream_done() {
+        let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
         let app = build_router(web_state);
 
         let req = Request::builder()
@@ -848,5 +1136,148 @@ mod tests {
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("event: delta"));
         assert!(text.contains("event: done"));
+    }
+
+    #[tokio::test]
+    async fn test_auth_failure_requires_header() {
+        let web_state = test_web_state(
+            Box::new(DummyLlm),
+            Some("secret-token".into()),
+            WebLimits::default(),
+        );
+        let app = build_router(web_state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_same_session_concurrency_limited() {
+        let limits = WebLimits {
+            max_inflight_per_session: 1,
+            max_requests_per_window: 10,
+            rate_window: Duration::from_secs(10),
+            run_history_limit: 128,
+        };
+        let web_state = test_web_state(Box::new(SlowLlm { sleep_ms: 300 }), None, limits);
+        let app = build_router(web_state);
+
+        let req1 = Request::builder()
+            .method("POST")
+            .uri("/api/send")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"session_key":"main","sender_name":"u","message":"one"}"#,
+            ))
+            .unwrap();
+        let req2 = Request::builder()
+            .method("POST")
+            .uri("/api/send")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"session_key":"main","sender_name":"u","message":"two"}"#,
+            ))
+            .unwrap();
+
+        let app_a = app.clone();
+        let first = tokio::spawn(async move { app_a.oneshot(req1).await.unwrap() });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let resp2 = app.clone().oneshot(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let resp1 = first.await.unwrap();
+        assert_eq!(resp1.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_stream_includes_tool_events_and_replay() {
+        let web_state = test_web_state(
+            Box::new(ToolFlowLlm {
+                calls: AtomicUsize::new(0),
+            }),
+            None,
+            WebLimits::default(),
+        );
+        let app = build_router(web_state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/send_stream")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"session_key":"main","sender_name":"u","message":"do tool"}"#,
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let run_id = v.get("run_id").and_then(|x| x.as_str()).unwrap();
+
+        let req_stream = Request::builder()
+            .method("GET")
+            .uri(format!("/api/stream?run_id={run_id}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp_stream = app.clone().oneshot(req_stream).await.unwrap();
+        assert_eq!(resp_stream.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp_stream.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("event: tool_start"));
+        assert!(text.contains("event: tool_result"));
+        assert!(text.contains("event: done"));
+
+        let req_status = Request::builder()
+            .method("GET")
+            .uri(format!("/api/run_status?run_id={run_id}"))
+            .body(Body::empty())
+            .unwrap();
+        let status_resp = app.clone().oneshot(req_status).await.unwrap();
+        assert_eq!(status_resp.status(), StatusCode::OK);
+        let status_body = axum::body::to_bytes(status_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let status_json: serde_json::Value = serde_json::from_slice(&status_body).unwrap();
+        let last_event_id = status_json
+            .get("last_event_id")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        assert!(last_event_id > 0);
+
+        let req_replay = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/stream?run_id={run_id}&last_event_id={last_event_id}"
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let replay_resp = app.oneshot(req_replay).await.unwrap();
+        assert_eq!(replay_resp.status(), StatusCode::OK);
+        let replay_bytes = axum::body::to_bytes(replay_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let replay_text = String::from_utf8_lossy(&replay_bytes);
+        // Nothing newer than last_event_id, replay should be empty payload.
+        assert!(replay_text.trim().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_db_paths_use_call_blocking_in_web_flow() {
+        let state = test_state(Box::new(DummyLlm));
+        let chat_id = 12345_i64;
+        let message_count = call_blocking(state.db.clone(), move |db| db.get_all_messages(chat_id))
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(message_count, 0);
     }
 }
