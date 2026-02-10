@@ -178,19 +178,26 @@ function saveUiTheme(value: UiTheme): void {
   localStorage.setItem('microclaw_ui_theme', value)
 }
 
-function readSessionFromUrl(): string | null {
-  if (typeof window === 'undefined') return null
-  const raw = new URLSearchParams(window.location.search).get('session')
-  if (!raw) return null
-  const key = raw.trim()
-  return key.length > 0 ? key : null
-}
-
 function writeSessionToUrl(sessionKey: string): void {
   if (typeof window === 'undefined') return
   const url = new URL(window.location.href)
   url.searchParams.set('session', sessionKey)
   window.history.replaceState(null, '', url.toString())
+}
+
+function pickLatestSessionKey(items: SessionItem[]): string {
+  if (items.length === 0) return 'main'
+
+  const parsed = items
+    .map((item) => ({ item, ts: Date.parse(item.last_message_time || '') }))
+    .filter((v) => Number.isFinite(v.ts))
+
+  if (parsed.length > 0) {
+    parsed.sort((a, b) => b.ts - a.ts)
+    return parsed[0]?.item.session_key || 'main'
+  }
+
+  return items[items.length - 1]?.session_key || 'main'
 }
 
 if (typeof document !== 'undefined') {
@@ -499,7 +506,7 @@ function App() {
   const [uiTheme, setUiTheme] = useState<UiTheme>(readUiTheme())
   const [sessions, setSessions] = useState<SessionItem[]>([])
   const [extraSessions, setExtraSessions] = useState<SessionItem[]>([])
-  const [sessionKey, setSessionKey] = useState<string>(readSessionFromUrl() || 'main')
+  const [sessionKey, setSessionKey] = useState<string>('main')
   const [historySeed, setHistorySeed] = useState<ThreadMessageLike[]>([])
   const [historyCountBySession, setHistoryCountBySession] = useState<Record<string, number>>({})
   const [runtimeNonce, setRuntimeNonce] = useState<number>(0)
@@ -786,11 +793,19 @@ function App() {
   }
 
   async function onDeleteSessionByKey(targetSession: string): Promise<void> {
+    if (targetSession === 'main') {
+      setStatusText('Cannot delete main session. Use Clear Context instead.')
+      return
+    }
     try {
-      await api('/api/delete_session', {
+      const resp = await api<{ deleted?: boolean }>('/api/delete_session', {
         method: 'POST',
         body: JSON.stringify({ session_key: targetSession }),
       })
+
+      if (resp.deleted === false) {
+        setStatusText('No session data found to delete.')
+      }
 
       setExtraSessions((prev) => prev.filter((s) => s.session_key !== targetSession))
       setHistoryCountBySession((prev) => {
@@ -805,7 +820,9 @@ function App() {
         await loadHistory(fallback)
       }
       await loadSessions()
-      setStatusText('Session deleted')
+      if (resp.deleted !== false) {
+        setStatusText('Session deleted')
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -932,11 +949,8 @@ function App() {
         const loaded = Array.isArray(data.sessions) ? data.sessions : []
         setSessions(loaded)
 
-        const fromUrl = readSessionFromUrl()
-        const keys = new Set(loaded.map((item) => item.session_key))
-        const initialSession = fromUrl && keys.has(fromUrl)
-          ? fromUrl
-          : loaded[0]?.session_key || 'main'
+        const latestSession = pickLatestSessionKey(loaded)
+        const initialSession = latestSession
 
         setSessionKey(initialSession)
         writeSessionToUrl(initialSession)

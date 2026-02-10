@@ -612,6 +612,25 @@ fn resolve_chat_id(session_key: &str) -> i64 {
         .unwrap_or_else(|| session_key_to_chat_id(session_key))
 }
 
+async fn resolve_chat_id_for_session_key(
+    state: &WebState,
+    session_key: &str,
+) -> Result<i64, (StatusCode, String)> {
+    if let Some(parsed) = parse_chat_id_from_session_key(session_key) {
+        return Ok(parsed);
+    }
+
+    let key = session_key.to_string();
+    let by_title = call_blocking(state.app_state.db.clone(), move |db| db.get_recent_chats(4000))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .into_iter()
+        .find(|c| c.chat_title.as_deref() == Some(key.as_str()))
+        .map(|c| c.chat_id);
+
+    Ok(by_title.unwrap_or_else(|| resolve_chat_id(session_key)))
+}
+
 async fn api_sessions(
     headers: HeaderMap,
     State(state): State<WebState>,
@@ -1117,13 +1136,37 @@ async fn api_reset(
     require_auth(&headers, state.auth_token.as_deref())?;
 
     let session_key = normalize_session_key(body.session_key.as_deref());
-    let chat_id = resolve_chat_id(&session_key);
+    let chat_id = resolve_chat_id_for_session_key(&state, &session_key).await?;
 
-    let deleted = call_blocking(state.app_state.db.clone(), move |db| {
-        db.delete_session(chat_id)
+    let chat_type = call_blocking(state.app_state.db.clone(), move |db| {
+        db.get_chat_type(chat_id)
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let deleted = if matches!(chat_type.as_deref(), Some("web")) {
+        let deleted = call_blocking(state.app_state.db.clone(), move |db| {
+            db.delete_chat_data(chat_id)
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        // Keep the web session entry in the session list after clearing context.
+        let session_key_for_chat = session_key.clone();
+        call_blocking(state.app_state.db.clone(), move |db| {
+            db.upsert_chat(chat_id, Some(&session_key_for_chat), "web")
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        deleted
+    } else {
+        call_blocking(state.app_state.db.clone(), move |db| {
+            db.delete_session(chat_id)
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    };
 
     Ok(Json(json!({ "ok": true, "deleted": deleted })))
 }
@@ -1136,7 +1179,7 @@ async fn api_delete_session(
     require_auth(&headers, state.auth_token.as_deref())?;
 
     let session_key = normalize_session_key(body.session_key.as_deref());
-    let chat_id = resolve_chat_id(&session_key);
+    let chat_id = resolve_chat_id_for_session_key(&state, &session_key).await?;
 
     let deleted = call_blocking(state.app_state.db.clone(), move |db| {
         db.delete_chat_data(chat_id)
