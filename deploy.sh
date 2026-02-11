@@ -48,12 +48,6 @@ echo "Starting deploy ($MODE)..."
 
 
 
-git add .
-git commit -m "deployed"
-git push
-
-
-
 echo "Deploy complete."
 
 

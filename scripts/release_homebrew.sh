@@ -63,7 +63,7 @@ build_release_notes() {
   {
     echo "MicroClaw $new_tag"
     echo
-    echo "## 主要改动"
+    echo "## Change log"
     if [ -n "$changes" ]; then
       while IFS= read -r line; do
         [ -n "$line" ] && echo "- $line"
@@ -160,7 +160,7 @@ SHA256=$(shasum -a 256 "$TARBALL_PATH" | awk '{print $1}')
 echo "SHA256: $SHA256"
 
 # --- Git commit + tag ---
-git add Cargo.toml
+git add .
 git commit -m "bump version to $NEW_VERSION"
 git tag "$TAG"
 git push
