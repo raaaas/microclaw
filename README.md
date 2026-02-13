@@ -651,7 +651,7 @@ Key design decisions:
 MicroClaw's core loop is channel-agnostic. A new platform integration should mainly be an adapter layer:
 
 1. Implement inbound mapping from platform events into canonical chat inputs (`chat_id`, sender, chat type, content blocks).
-2. Reuse the shared `process_with_claude` flow instead of creating a platform-specific agent loop.
+2. Reuse the shared `process_with_agent` flow instead of creating a platform-specific agent loop.
 3. Implement outbound delivery for text and attachment responses (including platform-specific length limits).
 4. Define mention/reply trigger rules for group/server contexts.
 5. Preserve session key stability so resume/compaction/memory continue to work across restarts.

@@ -62,10 +62,10 @@ pub trait AgentEngine: Send + Sync {
     ) -> anyhow::Result<String>;
 }
 
-pub struct ClaudeAgentEngine;
+pub struct DefaultAgentEngine;
 
 #[async_trait]
-impl AgentEngine for ClaudeAgentEngine {
+impl AgentEngine for DefaultAgentEngine {
     async fn process(
         &self,
         state: &AppState,
@@ -95,7 +95,7 @@ pub async fn process_with_agent(
     override_prompt: Option<&str>,
     image_data: Option<(String, String)>,
 ) -> anyhow::Result<String> {
-    let engine = ClaudeAgentEngine;
+    let engine = DefaultAgentEngine;
     engine
         .process(state, context, override_prompt, image_data)
         .await
@@ -108,7 +108,7 @@ pub async fn process_with_agent_with_events(
     image_data: Option<(String, String)>,
     event_tx: Option<&UnboundedSender<AgentEvent>>,
 ) -> anyhow::Result<String> {
-    let engine = ClaudeAgentEngine;
+    let engine = DefaultAgentEngine;
     engine
         .process_with_events(state, context, override_prompt, image_data, event_tx)
         .await
@@ -886,7 +886,7 @@ pub(crate) fn history_to_claude_messages(
         });
     }
 
-    // Ensure the last message is from user (Claude API requirement)
+    // Ensure the last message is from user (messages API requirement)
     if let Some(last) = messages.last() {
         if last.role == "assistant" {
             messages.pop();
@@ -1019,7 +1019,7 @@ pub fn archive_conversation(data_dir: &str, channel: &str, chat_id: i64, message
     }
 }
 
-/// Compact old messages by summarizing them via Claude, keeping recent messages verbatim.
+/// Compact old messages by summarizing them via LLM, keeping recent messages verbatim.
 async fn compact_messages(
     state: &AppState,
     caller_channel: &str,

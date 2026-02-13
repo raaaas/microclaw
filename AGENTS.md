@@ -10,7 +10,7 @@ MicroClaw is a Rust multi-platform chat bot with a channel-agnostic core plus pl
 - **Async runtime:** Tokio
 - **Telegram:** teloxide 0.17
 - **Discord:** serenity 0.12
-- **AI:** Anthropic Messages API via reqwest (direct HTTP, no SDK)
+- **AI:** Multi-provider LLM runtime (`src/llm.rs`) with native Anthropic + OpenAI-compatible HTTP providers
 - **Database:** SQLite via rusqlite (bundled)
 - **Serialization:** serde + serde_json
 - **Scheduling:** cron 0.13 (6-field cron expressions)
@@ -24,13 +24,13 @@ src/
     config.rs        -- Loads all settings from microclaw.config.yaml.
     error.rs         -- MicroClawError enum (thiserror). All error variants for the app.
     telegram.rs      -- Telegram message handler. Contains the shared agentic tool-use loop
-                        (process_with_claude), session resume (load/save full message
+                        (process_with_agent), session resume (load/save full message
                         state), context compaction (summarize old messages), continuous
                         typing indicator, group chat catch-up, and response splitting.
     discord.rs       -- Discord message handler via serenity gateway. Reuses
-                        process_with_claude and shared tool/session/memory flow.
-    claude.rs        -- Anthropic Messages API client. Request/response types, HTTP calls
-                        with retry on 429.
+                        process_with_agent and shared tool/session/memory flow.
+    llm.rs           -- LLM provider abstraction + implementations (Anthropic + OpenAI-compatible),
+                        request/response mapping, retries, and streaming behavior.
     db.rs            -- SQLite database. Four tables: chats, messages, scheduled_tasks,
                         sessions. Uses Mutex<Connection> for thread safety. Shared as
                         Arc<Database>.
@@ -71,7 +71,7 @@ Top-level web directories:
 
 ## Key patterns
 
-### Agentic tool-use loop (`telegram.rs:process_with_claude`)
+### Agentic tool-use loop (`agent_engine.rs:process_with_agent`)
 
 The core loop:
 1. Try loading saved session (full `Vec<Message>` with tool blocks) from `sessions` table
@@ -81,8 +81,8 @@ The core loop:
      - Groups: all messages since last bot response (`get_messages_since_last_bot_response`)
 2. Build system prompt with memory context and chat_id
 3. If `override_prompt` is set (from scheduler), append as user message
-4. Compact if messages exceed `max_session_messages` (summarize old messages via Claude, keep recent verbatim)
-5. Call Claude API with tool definitions
+4. Compact if messages exceed `max_session_messages` (summarize old messages via LLM, keep recent verbatim)
+5. Call configured LLM provider with tool definitions
 6. If `stop_reason == "tool_use"` -> execute tools -> append results -> loop back to step 5
 7. If `stop_reason == "end_turn"` -> extract text -> strip image base64 -> save session -> return
 8. Loop up to `max_tool_iterations` times
@@ -95,7 +95,7 @@ Full conversation state (including tool_use and tool_result blocks) is serialize
 
 When session message count exceeds `max_session_messages` (default 40):
 1. Split messages into old (to summarize) and recent (to keep, default 20)
-2. Call Claude with a summarization prompt (no tools)
+2. Call LLM with a summarization prompt (no tools)
 3. Replace old messages with `[Conversation Summary]` + assistant ack
 4. Append recent messages with role alternation fix
 5. On API failure: fall back to simple truncation (discard old, keep recent)
@@ -113,7 +113,7 @@ A `tokio::spawn` task sends `ChatAction::Typing` every 4 seconds. The handle is 
 Spawned in `run_bot()` as a background task:
 1. Sleep 60 seconds
 2. Query `scheduled_tasks WHERE status='active' AND next_run <= now`
-3. For each due task, call `process_with_claude(state, chat_id, "scheduler", "private", Some(prompt))`
+3. For each due task, call `process_with_agent(...)` with scheduler override prompt
 4. Send response to chat
 5. Update task: for cron tasks compute next_run, for one-shot tasks set status='completed'
 
@@ -129,7 +129,7 @@ pub trait Tool: Send + Sync {
 }
 ```
 
-`ToolRegistry` holds all tools and dispatches execution by name. Tool definitions are passed to Claude as JSON Schema.
+`ToolRegistry` holds all tools and dispatches execution by name. Tool definitions are passed to the active LLM provider as JSON Schema.
 
 Constructor signatures:
 - `ToolRegistry::new(config: &Config, bot: Bot, db: Arc<Database>)` -- full registry (17 tools)
@@ -141,7 +141,7 @@ Two scopes:
 - **Global:** `data/groups/AGENTS.md` -- shared across all chats
 - **Per-chat:** `data/groups/{chat_id}/AGENTS.md` -- specific to one conversation
 
-Memory content is injected into the system prompt wrapped in `<global_memory>` / `<chat_memory>` XML tags. Claude reads/writes memory via the `read_memory` and `write_memory` tools.
+Memory content is injected into the system prompt wrapped in `<global_memory>` / `<chat_memory>` XML tags. The model reads/writes memory via the `read_memory` and `write_memory` tools.
 
 ### Database (`db.rs`)
 
@@ -153,13 +153,13 @@ Four tables:
 
 Uses WAL mode for performance. `Database` struct wraps `Mutex<Connection>`, shared as `Arc<Database>`.
 
-### Claude API (`claude.rs`)
+### LLM Providers (`llm.rs`)
 
-Direct HTTP to `https://api.anthropic.com/v1/messages` with:
-- `x-api-key` header for auth
-- `anthropic-version: 2023-06-01` header
-- Exponential backoff retry on HTTP 429 (up to 3 attempts)
-- Content blocks use tagged enums: `Text`, `ToolUse`, `ToolResult`
+Provider abstraction supports:
+- Native Anthropic Messages API calls
+- OpenAI-compatible API calls
+- Usage accounting and retry handling
+- Shared content block model: `Text`, `ToolUse`, `ToolResult`
 
 ### Message handling (platform-specific)
 
@@ -168,7 +168,7 @@ Direct HTTP to `https://api.anthropic.com/v1/messages` with:
 - **Discord DMs:** always respond
 - **Discord server channels:** respond on mention (and optional channel whitelist)
 - All messages are stored regardless of whether the bot responds
-- Consecutive same-role messages are merged before sending to Claude
+- Consecutive same-role messages are merged before sending to the active LLM provider
 - Responses are split at channel limits (Telegram 4096, Discord 2000)
 - Empty responses are not sent (agent may have used send_message tool)
 
