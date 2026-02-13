@@ -706,7 +706,7 @@ impl OpenAiProvider {
 
         let (api_key, codex_account_id) = if is_openai_codex {
             let _ = refresh_openai_codex_auth_if_needed();
-            match resolve_openai_codex_auth("") {
+            match resolve_openai_codex_auth(&config.api_key) {
                 Ok(auth) => (auth.bearer_token, auth.account_id),
                 Err(e) => {
                     warn!("{}", e);
@@ -2134,6 +2134,136 @@ mod tests {
 
         assert_eq!(path, "/responses");
         assert_eq!(auth_header.as_deref(), Some("Bearer oauth-token"));
+        assert_eq!(resp.stop_reason.as_deref(), Some("end_turn"));
+        match &resp.content[0] {
+            ResponseContentBlock::Text { text } => assert_eq!(text, "ok"),
+            _ => panic!("Expected text block"),
+        }
+        assert_eq!(rx.recv().await.as_deref(), Some("ok"));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_openai_codex_stream_falls_back_to_api_key_when_oauth_missing() {
+        let _guard = env_lock();
+        let prev_access = std::env::var("OPENAI_CODEX_ACCESS_TOKEN").ok();
+        let prev_codex_home = std::env::var("CODEX_HOME").ok();
+        std::env::remove_var("OPENAI_CODEX_ACCESS_TOKEN");
+
+        let auth_dir = std::env::temp_dir().join(format!(
+            "microclaw-codex-auth-empty-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&auth_dir).unwrap();
+        std::env::set_var("CODEX_HOME", &auth_dir);
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel::<(String, Option<String>)>();
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let path = req
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("")
+                .to_string();
+            let auth_header = req.lines().find_map(|line| {
+                let lower = line.to_ascii_lowercase();
+                if lower.starts_with("authorization:") {
+                    Some(
+                        line.split_once(':')
+                            .map(|(_, v)| v.trim().to_string())
+                            .unwrap_or_default(),
+                    )
+                } else {
+                    None
+                }
+            });
+            let _ = request_tx.send((path, auth_header));
+
+            let body = r#"{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+
+        let config = Config {
+            telegram_bot_token: "tok".into(),
+            bot_username: "bot".into(),
+            llm_provider: "openai-codex".into(),
+            api_key: "sk-proxy-key".into(),
+            model: "gpt-5.3-codex".into(),
+            llm_base_url: Some(format!("http://{}", addr)),
+            max_tokens: 8192,
+            max_tool_iterations: 100,
+            max_history_messages: 50,
+            max_document_size_mb: 100,
+            data_dir: "/tmp".into(),
+            working_dir: "/tmp".into(),
+            working_dir_isolation: WorkingDirIsolation::Shared,
+            openai_api_key: None,
+            timezone: "UTC".into(),
+            allowed_groups: vec![],
+            control_chat_ids: vec![],
+            max_session_messages: 40,
+            compact_keep_recent: 20,
+            discord_bot_token: None,
+            discord_allowed_channels: vec![],
+            show_thinking: false,
+            web_enabled: false,
+            web_host: "127.0.0.1".into(),
+            web_port: 3900,
+            web_auth_token: None,
+            web_max_inflight_per_session: 2,
+            web_max_requests_per_window: 8,
+            web_rate_window_seconds: 10,
+            web_run_history_limit: 512,
+            web_session_idle_ttl_seconds: 300,
+            model_prices: vec![],
+        };
+        let provider = OpenAiProvider::new(&config);
+        let messages = vec![Message {
+            role: "user".into(),
+            content: MessageContent::Text("hi".into()),
+        }];
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let resp = LlmProvider::send_message_stream(&provider, "", messages, None, Some(&tx))
+            .await
+            .unwrap();
+        drop(tx);
+
+        let (path, auth_header) = request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        server.join().unwrap();
+        if let Some(prev) = prev_codex_home {
+            std::env::set_var("CODEX_HOME", prev);
+        } else {
+            std::env::remove_var("CODEX_HOME");
+        }
+        if let Some(prev) = prev_access {
+            std::env::set_var("OPENAI_CODEX_ACCESS_TOKEN", prev);
+        } else {
+            std::env::remove_var("OPENAI_CODEX_ACCESS_TOKEN");
+        }
+        let _ = std::fs::remove_dir(auth_dir);
+
+        assert_eq!(path, "/responses");
+        assert_eq!(auth_header.as_deref(), Some("Bearer sk-proxy-key"));
         assert_eq!(resp.stop_reason.as_deref(), Some("end_turn"));
         match &resp.content[0] {
             ResponseContentBlock::Text { text } => assert_eq!(text, "ok"),

@@ -76,7 +76,7 @@ pub fn codex_auth_file_has_access_token() -> Result<bool, MicroClawError> {
 }
 
 pub fn resolve_openai_codex_auth(
-    _fallback_api_key: &str,
+    fallback_api_key: &str,
 ) -> Result<CodexAuthResolved, MicroClawError> {
     if let Ok(token) = std::env::var("OPENAI_CODEX_ACCESS_TOKEN") {
         let trimmed = token.trim();
@@ -121,8 +121,16 @@ pub fn resolve_openai_codex_auth(
         }
     }
 
+    let fallback = fallback_api_key.trim();
+    if !fallback.is_empty() {
+        return Ok(CodexAuthResolved {
+            bearer_token: fallback.to_string(),
+            account_id: None,
+        });
+    }
+
     Err(MicroClawError::Config(format!(
-        "OpenAI Codex provider requires OAuth. Run `codex login` (expected auth file: {}) or set OPENAI_CODEX_ACCESS_TOKEN.",
+        "OpenAI Codex provider requires OAuth or api_key. Run `codex login` (expected auth file: {}), set OPENAI_CODEX_ACCESS_TOKEN, or configure api_key for your OpenAI-compatible endpoint.",
         auth_path.display()
     )))
 }
@@ -381,5 +389,40 @@ mod tests {
         let _ = std::fs::remove_dir(auth_dir);
 
         assert!(err.contains("requires OAuth"));
+    }
+
+    #[test]
+    fn test_resolve_openai_codex_auth_uses_fallback_api_key() {
+        let _guard = env_lock();
+        let prev_codex_home = std::env::var("CODEX_HOME").ok();
+        let prev_access = std::env::var("OPENAI_CODEX_ACCESS_TOKEN").ok();
+        std::env::remove_var("OPENAI_CODEX_ACCESS_TOKEN");
+
+        let auth_dir = std::env::temp_dir().join(format!(
+            "microclaw-codex-auth-fallback-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&auth_dir).unwrap();
+        std::env::set_var("CODEX_HOME", &auth_dir);
+
+        let auth = resolve_openai_codex_auth("sk-proxy-key").unwrap();
+
+        if let Some(prev) = prev_codex_home {
+            std::env::set_var("CODEX_HOME", prev);
+        } else {
+            std::env::remove_var("CODEX_HOME");
+        }
+        if let Some(prev) = prev_access {
+            std::env::set_var("OPENAI_CODEX_ACCESS_TOKEN", prev);
+        } else {
+            std::env::remove_var("OPENAI_CODEX_ACCESS_TOKEN");
+        }
+        let _ = std::fs::remove_dir(auth_dir);
+
+        assert_eq!(auth.bearer_token, "sk-proxy-key");
+        assert!(auth.account_id.is_none());
     }
 }

@@ -332,7 +332,7 @@ Choose a provider and create an API key:
 - Anthropic: [console.anthropic.com](https://console.anthropic.com/)
 - OpenAI: [platform.openai.com](https://platform.openai.com/)
 - Or any OpenAI-compatible provider (OpenRouter, DeepSeek, etc.)
-- For `openai-codex`, use OAuth (`codex login`) instead of an API key.
+- For `openai-codex`, you can use OAuth (`codex login`) or an API key (for OpenAI-compatible proxy endpoints).
 
 ### 3. Configure (recommended: interactive Q&A)
 
@@ -381,7 +381,7 @@ Provider presets available in the wizard:
 
 For Ollama, `llm_base_url` defaults to `http://127.0.0.1:11434/v1`, `api_key` is optional, and the interactive setup wizard can auto-detect locally installed models.
 
-For `openai-codex`, run `codex login` first. MicroClaw will read OAuth from `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`). `api_key` is optional and ignored for this provider. The default base URL is `https://chatgpt.com/backend-api`.
+For `openai-codex`, you can run `codex login` first and MicroClaw will read OAuth from `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`). You can also provide `api_key` when using an OpenAI-compatible proxy endpoint. The default base URL is `https://chatgpt.com/backend-api`.
 
 You can still configure manually with `microclaw.config.yaml`:
 
@@ -436,7 +436,7 @@ All configuration is via `microclaw.config.yaml`:
 | Key | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `telegram_bot_token` | Yes | -- | Telegram bot token from BotFather |
-| `api_key` | Yes* | -- | LLM API key (`ollama` can leave this empty; `openai-codex` uses OAuth and ignores this field) |
+| `api_key` | Yes* | -- | LLM API key (`ollama` can leave this empty; `openai-codex` supports OAuth or `api_key`) |
 | `bot_username` | Yes | -- | Bot username (without @) |
 | `llm_provider` | No | `anthropic` | Provider preset ID (or custom ID). `anthropic` uses native Anthropic API, others use OpenAI-compatible API |
 | `model` | No | provider-specific | Model name |

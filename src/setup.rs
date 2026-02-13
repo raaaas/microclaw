@@ -588,7 +588,7 @@ impl SetupApp {
         let provider = self.field_value("LLM_PROVIDER").to_lowercase();
         let api_key_input = self.field_value("LLM_API_KEY");
         let (api_key, codex_account_id) = if is_openai_codex_provider(&provider) {
-            let auth = resolve_openai_codex_auth("")?;
+            let auth = resolve_openai_codex_auth(&api_key_input)?;
             (auth.bearer_token, auth.account_id)
         } else {
             (api_key_input, None)

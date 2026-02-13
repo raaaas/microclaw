@@ -8,7 +8,7 @@ bot_username: ""
 
 # LLM provider (anthropic, openai-codex, ollama, openai, openrouter, deepseek, google, etc.)
 llm_provider: "anthropic"
-# API key for LLM provider (optional for ollama; ignored for openai-codex OAuth)
+# API key for LLM provider (optional for ollama; openai-codex supports OAuth or api_key)
 api_key: ""
 # Model name (leave empty for provider default)
 model: ""
