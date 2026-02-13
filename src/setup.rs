@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -240,6 +241,7 @@ impl Field {
     }
 }
 
+#[derive(Clone)]
 struct SetupApp {
     fields: Vec<Field>,
     selected: usize,
@@ -1416,7 +1418,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, app: &SetupApp) {
                 "Select LLM Provider",
                 PROVIDER_PRESETS
                     .iter()
-                    .map(|p| format!("{} ({})", p.id, p.label))
+                    .map(|p| format!("{} - {}", p.id, p.label))
                     .collect(),
             ),
             PickerKind::Model => ("Select LLM Model", app.model_options()),
@@ -1467,23 +1469,81 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, app: &SetupApp) {
     }
 }
 
-fn try_save(app: &mut SetupApp) {
-    match app
-        .validate_local()
-        .and_then(|_| app.validate_online())
-        .and_then(|checks| {
-            let values = app.to_env_map();
-            let backup = save_config_yaml(Path::new("microclaw.config.yaml"), &values)?;
-            app.backup_path = backup;
-            app.completion_summary = checks;
-            Ok(())
-        }) {
-        Ok(_) => {
-            app.status = "Saved microclaw.config.yaml".into();
-            app.completed = true;
+fn run_with_spinner<T, F>(
+    terminal: &mut DefaultTerminal,
+    app: &mut SetupApp,
+    label: &str,
+    work: F,
+) -> Result<T, MicroClawError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, MicroClawError> + Send + 'static,
+{
+    let (tx, rx) = mpsc::channel::<Result<T, MicroClawError>>();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+
+    let frames = ["-", "\\", "|", "/"];
+    let mut i = 0usize;
+    loop {
+        app.status = format!("{label} {}", frames[i % frames.len()]);
+        terminal.draw(|f| draw_ui(f, app))?;
+        i += 1;
+
+        match rx.recv_timeout(Duration::from_millis(120)) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(MicroClawError::Config(
+                    "save worker disconnected unexpectedly".into(),
+                ));
+            }
         }
-        Err(e) => app.status = format!("Cannot save: {e}"),
     }
+}
+
+fn try_save(terminal: &mut DefaultTerminal, app: &mut SetupApp) -> Result<(), MicroClawError> {
+    app.status = "Saving (1/3): local validation...".into();
+    terminal.draw(|f| draw_ui(f, app))?;
+    if let Err(e) = app.validate_local() {
+        app.status = format!("Cannot save: {e}");
+        return Ok(());
+    }
+
+    let app_for_online = app.clone();
+    let checks = match run_with_spinner(
+        terminal,
+        app,
+        "Saving (2/3): online validation",
+        move || app_for_online.validate_online(),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            app.status = format!("Cannot save: {e}");
+            return Ok(());
+        }
+    };
+
+    let values = app.to_env_map();
+    let backup = match run_with_spinner(
+        terminal,
+        app,
+        "Saving (3/3): writing microclaw.config.yaml",
+        move || save_config_yaml(Path::new("microclaw.config.yaml"), &values),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            app.status = format!("Cannot save: {e}");
+            return Ok(());
+        }
+    };
+
+    app.backup_path = backup;
+    app.completion_summary = checks;
+    app.status = "Saved microclaw.config.yaml".into();
+    app.completed = true;
+    Ok(())
 }
 
 fn run_wizard(mut terminal: DefaultTerminal) -> Result<bool, MicroClawError> {
@@ -1598,10 +1658,10 @@ fn run_wizard(mut terminal: DefaultTerminal) -> Result<bool, MicroClawError> {
                     Err(e) => app.status = format!("Validation failed: {e}"),
                 },
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    try_save(&mut app);
+                    try_save(&mut terminal, &mut app)?;
                 }
                 KeyCode::Char('s') => {
-                    try_save(&mut app);
+                    try_save(&mut terminal, &mut app)?;
                 }
                 _ => {}
             }
