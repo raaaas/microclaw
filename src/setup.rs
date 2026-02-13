@@ -913,7 +913,11 @@ impl SetupApp {
 
     fn section_for_key(key: &str) -> &'static str {
         match key {
-            "DATA_DIR" | "TIMEZONE" | "WORKING_DIR" | "REFLECTOR_ENABLED" | "REFLECTOR_INTERVAL_MINS" => "App",
+            "DATA_DIR"
+            | "TIMEZONE"
+            | "WORKING_DIR"
+            | "REFLECTOR_ENABLED"
+            | "REFLECTOR_INTERVAL_MINS" => "App",
             "LLM_PROVIDER" | "LLM_API_KEY" | "LLM_MODEL" | "LLM_BASE_URL" => "Model",
             "ENABLED_CHANNELS" | "TELEGRAM_BOT_TOKEN" | "BOT_USERNAME" | "DISCORD_BOT_TOKEN" => {
                 "Channel"
@@ -1262,13 +1266,18 @@ fn save_config_yaml(
         .map(|v| v.trim().to_lowercase())
         .map(|v| v != "false" && v != "0" && v != "no")
         .unwrap_or(true);
-    yaml.push_str("\n# Memory reflector: periodically extracts structured memories from conversations\n");
+    yaml.push_str(
+        "\n# Memory reflector: periodically extracts structured memories from conversations\n",
+    );
     yaml.push_str(&format!("reflector_enabled: {}\n", reflector_enabled));
     let reflector_interval = values
         .get("REFLECTOR_INTERVAL_MINS")
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(15);
-    yaml.push_str(&format!("reflector_interval_mins: {}\n", reflector_interval));
+    yaml.push_str(&format!(
+        "reflector_interval_mins: {}\n",
+        reflector_interval
+    ));
 
     fs::write(path, yaml)?;
     Ok(backup)

@@ -316,7 +316,10 @@ async fn reflect_for_chat(state: &Arc<AppState>, chat_id: i64) {
             continue;
         }
 
-        if existing.iter().any(|m| jaccard_similar(&m.content, content, 0.5)) {
+        if existing
+            .iter()
+            .any(|m| jaccard_similar(&m.content, content, 0.5))
+        {
             continue;
         }
 

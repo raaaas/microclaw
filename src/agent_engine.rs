@@ -515,7 +515,11 @@ pub(crate) async fn build_db_memory_context(db: &std::sync::Arc<Database>, chat_
 
     let mut out = String::from("<structured_memories>\n");
     for m in &memories {
-        let scope = if m.chat_id.is_none() { "global" } else { "chat" };
+        let scope = if m.chat_id.is_none() {
+            "global"
+        } else {
+            "chat"
+        };
         out.push_str(&format!("[{}] [{}] {}\n", m.category, scope, m.content));
     }
     out.push_str("</structured_memories>\n");
