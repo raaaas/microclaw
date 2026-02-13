@@ -15,6 +15,7 @@ use crate::db::call_blocking;
 use crate::db::StoredMessage;
 use crate::runtime::AppState;
 use crate::text::floor_char_boundary;
+use crate::usage::build_usage_report;
 
 struct Handler {
     app_state: Arc<AppState>,
@@ -90,6 +91,28 @@ impl EventHandler for Handler {
                     .channel_id
                     .say(&ctx.http, "No session to archive.")
                     .await;
+            }
+            return;
+        }
+
+        // Handle /usage command
+        if text.trim() == "/usage" {
+            match build_usage_report(
+                self.app_state.db.clone(),
+                &self.app_state.config,
+                channel_id,
+            )
+            .await
+            {
+                Ok(text) => {
+                    let _ = msg.channel_id.say(&ctx.http, text).await;
+                }
+                Err(e) => {
+                    let _ = msg
+                        .channel_id
+                        .say(&ctx.http, format!("Failed to query usage statistics: {e}"))
+                        .await;
+                }
             }
             return;
         }

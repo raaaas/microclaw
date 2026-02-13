@@ -1,3 +1,6 @@
+use crate::codex_auth::{
+    codex_auth_file_has_access_token, is_openai_codex_provider, provider_allows_empty_api_key,
+};
 use crate::error::MicroClawError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -74,6 +77,10 @@ fn default_web_run_history_limit() -> usize {
 fn default_web_session_idle_ttl_seconds() -> u64 {
     300
 }
+
+fn default_model_prices() -> Vec<ModelPrice> {
+    Vec::new()
+}
 fn is_local_web_host(host: &str) -> bool {
     let h = host.trim().to_ascii_lowercase();
     h == "127.0.0.1" || h == "localhost" || h == "::1"
@@ -84,6 +91,13 @@ fn is_local_web_host(host: &str) -> bool {
 pub enum WorkingDirIsolation {
     Shared,
     Chat,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ModelPrice {
+    pub model: String,
+    pub input_per_million_usd: f64,
+    pub output_per_million_usd: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -150,6 +164,8 @@ pub struct Config {
     pub web_run_history_limit: usize,
     #[serde(default = "default_web_session_idle_ttl_seconds")]
     pub web_session_idle_ttl_seconds: u64,
+    #[serde(default = "default_model_prices")]
+    pub model_prices: Vec<ModelPrice>,
 }
 
 impl Config {
@@ -223,6 +239,7 @@ impl Config {
             self.model = match self.llm_provider.as_str() {
                 "anthropic" => "claude-sonnet-4-5-20250929".into(),
                 "ollama" => "llama3.2".into(),
+                "openai-codex" => "gpt-5.3-codex".into(),
                 _ => "gpt-5.2".into(),
             };
         }
@@ -272,6 +289,26 @@ impl Config {
         if self.max_document_size_mb == 0 {
             self.max_document_size_mb = default_max_document_size_mb();
         }
+        for price in &mut self.model_prices {
+            price.model = price.model.trim().to_string();
+            if price.model.is_empty() {
+                return Err(MicroClawError::Config(
+                    "model_prices entries must include non-empty model".into(),
+                ));
+            }
+            if !(price.input_per_million_usd.is_finite() && price.input_per_million_usd >= 0.0) {
+                return Err(MicroClawError::Config(format!(
+                    "model_prices[{}].input_per_million_usd must be >= 0",
+                    price.model
+                )));
+            }
+            if !(price.output_per_million_usd.is_finite() && price.output_per_million_usd >= 0.0) {
+                return Err(MicroClawError::Config(format!(
+                    "model_prices[{}].output_per_million_usd must be >= 0",
+                    price.model
+                )));
+            }
+        }
 
         // Validate required fields
         let has_telegram = !self.telegram_bot_token.trim().is_empty();
@@ -286,11 +323,42 @@ impl Config {
                 "At least one channel must be enabled: telegram_bot_token, discord_bot_token, or web_enabled=true".into(),
             ));
         }
-        if self.api_key.is_empty() && self.llm_provider != "ollama" {
+        if self.api_key.is_empty() && !provider_allows_empty_api_key(&self.llm_provider) {
             return Err(MicroClawError::Config("api_key is required".into()));
+        }
+        if self.api_key.is_empty() && is_openai_codex_provider(&self.llm_provider) {
+            let has_token = codex_auth_file_has_access_token()?;
+            if !has_token {
+                return Err(MicroClawError::Config(
+                    "openai-codex requires OAuth. Run `codex login` first, or set api_key / OPENAI_CODEX_ACCESS_TOKEN.".into(),
+                ));
+            }
         }
 
         Ok(())
+    }
+
+    pub fn model_price(&self, model: &str) -> Option<&ModelPrice> {
+        let needle = model.trim();
+        self.model_prices
+            .iter()
+            .find(|p| p.model.eq_ignore_ascii_case(needle))
+            .or_else(|| self.model_prices.iter().find(|p| p.model == "*"))
+    }
+
+    pub fn estimate_cost_usd(
+        &self,
+        model: &str,
+        input_tokens: i64,
+        output_tokens: i64,
+    ) -> Option<f64> {
+        let price = self.model_price(model)?;
+        let in_tok = input_tokens.max(0) as f64;
+        let out_tok = output_tokens.max(0) as f64;
+        Some(
+            (in_tok / 1_000_000.0) * price.input_per_million_usd
+                + (out_tok / 1_000_000.0) * price.output_per_million_usd,
+        )
     }
 
     /// Save config as YAML to the given path.
@@ -306,6 +374,14 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        ENV_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned")
+    }
 
     pub fn test_config() -> Config {
         Config {
@@ -340,6 +416,7 @@ mod tests {
             web_rate_window_seconds: 10,
             web_run_history_limit: 512,
             web_session_idle_ttl_seconds: 300,
+            model_prices: vec![],
         }
     }
 
@@ -496,6 +573,48 @@ mod tests {
     }
 
     #[test]
+    fn test_post_deserialize_openai_codex_allows_empty_api_key() {
+        let _guard = env_lock();
+        let prev_codex_home = std::env::var("CODEX_HOME").ok();
+        let prev_access = std::env::var("OPENAI_CODEX_ACCESS_TOKEN").ok();
+        std::env::remove_var("OPENAI_CODEX_ACCESS_TOKEN");
+
+        let auth_dir = std::env::temp_dir().join(format!(
+            "microclaw-codex-auth-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&auth_dir).unwrap();
+        std::fs::write(
+            auth_dir.join("auth.json"),
+            r#"{"tokens":{"access_token":"tok"}}"#,
+        )
+        .unwrap();
+        std::env::set_var("CODEX_HOME", &auth_dir);
+
+        let yaml =
+            "telegram_bot_token: tok\nbot_username: bot\nllm_provider: openai-codex\nmodel: gpt-5.3-codex\n";
+        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
+        config.post_deserialize().unwrap();
+
+        if let Some(prev) = prev_codex_home {
+            std::env::set_var("CODEX_HOME", prev);
+        } else {
+            std::env::remove_var("CODEX_HOME");
+        }
+        if let Some(prev) = prev_access {
+            std::env::set_var("OPENAI_CODEX_ACCESS_TOKEN", prev);
+        } else {
+            std::env::remove_var("OPENAI_CODEX_ACCESS_TOKEN");
+        }
+        let _ = std::fs::remove_file(auth_dir.join("auth.json"));
+        let _ = std::fs::remove_dir(auth_dir);
+        assert_eq!(config.llm_provider, "openai-codex");
+    }
+
+    #[test]
     fn test_post_deserialize_missing_bot_tokens() {
         let yaml = "bot_username: bot\napi_key: key\nweb_enabled: false\n";
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
@@ -519,6 +638,110 @@ mod tests {
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert_eq!(config.model, "gpt-5.2");
+    }
+
+    #[test]
+    fn test_post_deserialize_openai_codex_default_model() {
+        let _guard = env_lock();
+        let prev_codex_home = std::env::var("CODEX_HOME").ok();
+        let prev_access = std::env::var("OPENAI_CODEX_ACCESS_TOKEN").ok();
+        std::env::remove_var("OPENAI_CODEX_ACCESS_TOKEN");
+
+        let auth_dir = std::env::temp_dir().join(format!(
+            "microclaw-codex-auth-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&auth_dir).unwrap();
+        std::fs::write(
+            auth_dir.join("auth.json"),
+            r#"{"tokens":{"access_token":"tok"}}"#,
+        )
+        .unwrap();
+        std::env::set_var("CODEX_HOME", &auth_dir);
+
+        let yaml = "telegram_bot_token: tok\nbot_username: bot\nllm_provider: openai-codex\n";
+        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
+        config.post_deserialize().unwrap();
+
+        if let Some(prev) = prev_codex_home {
+            std::env::set_var("CODEX_HOME", prev);
+        } else {
+            std::env::remove_var("CODEX_HOME");
+        }
+        if let Some(prev) = prev_access {
+            std::env::set_var("OPENAI_CODEX_ACCESS_TOKEN", prev);
+        } else {
+            std::env::remove_var("OPENAI_CODEX_ACCESS_TOKEN");
+        }
+        let _ = std::fs::remove_file(auth_dir.join("auth.json"));
+        let _ = std::fs::remove_dir(auth_dir);
+        assert_eq!(config.model, "gpt-5.3-codex");
+    }
+
+    #[test]
+    fn test_post_deserialize_openai_codex_missing_oauth_token() {
+        let _guard = env_lock();
+        let prev_codex_home = std::env::var("CODEX_HOME").ok();
+        let prev_access = std::env::var("OPENAI_CODEX_ACCESS_TOKEN").ok();
+        std::env::remove_var("OPENAI_CODEX_ACCESS_TOKEN");
+
+        let auth_dir = std::env::temp_dir().join(format!(
+            "microclaw-codex-auth-missing-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&auth_dir).unwrap();
+        std::env::set_var("CODEX_HOME", &auth_dir);
+
+        let yaml = "telegram_bot_token: tok\nbot_username: bot\nllm_provider: openai-codex\n";
+        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
+        let err = config.post_deserialize().unwrap_err();
+        let msg = err.to_string();
+
+        if let Some(prev) = prev_codex_home {
+            std::env::set_var("CODEX_HOME", prev);
+        } else {
+            std::env::remove_var("CODEX_HOME");
+        }
+        if let Some(prev) = prev_access {
+            std::env::set_var("OPENAI_CODEX_ACCESS_TOKEN", prev);
+        } else {
+            std::env::remove_var("OPENAI_CODEX_ACCESS_TOKEN");
+        }
+        let _ = std::fs::remove_dir(auth_dir);
+
+        assert!(msg.contains("openai-codex requires OAuth"));
+    }
+
+    #[test]
+    fn test_post_deserialize_openai_codex_allows_env_access_token() {
+        let _guard = env_lock();
+        let prev_codex_home = std::env::var("CODEX_HOME").ok();
+        let prev_access = std::env::var("OPENAI_CODEX_ACCESS_TOKEN").ok();
+        std::env::remove_var("CODEX_HOME");
+        std::env::set_var("OPENAI_CODEX_ACCESS_TOKEN", "env-token");
+
+        let yaml = "telegram_bot_token: tok\nbot_username: bot\nllm_provider: openai-codex\n";
+        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
+        config.post_deserialize().unwrap();
+
+        if let Some(prev) = prev_codex_home {
+            std::env::set_var("CODEX_HOME", prev);
+        } else {
+            std::env::remove_var("CODEX_HOME");
+        }
+        if let Some(prev) = prev_access {
+            std::env::set_var("OPENAI_CODEX_ACCESS_TOKEN", prev);
+        } else {
+            std::env::remove_var("OPENAI_CODEX_ACCESS_TOKEN");
+        }
+
+        assert_eq!(config.llm_provider, "openai-codex");
     }
 
     #[test]
@@ -562,6 +785,43 @@ mod tests {
         let mut config: Config = serde_yaml::from_str(yaml).unwrap();
         config.post_deserialize().unwrap();
         assert_eq!(config.web_auth_token.as_deref(), Some("token123"));
+    }
+
+    #[test]
+    fn test_model_prices_parse_and_estimate() {
+        let yaml = r#"
+telegram_bot_token: tok
+bot_username: bot
+api_key: key
+model_prices:
+  - model: claude-sonnet-4-5-20250929
+    input_per_million_usd: 3.0
+    output_per_million_usd: 15.0
+"#;
+        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
+        config.post_deserialize().unwrap();
+        let est = config
+            .estimate_cost_usd("claude-sonnet-4-5-20250929", 1000, 2000)
+            .unwrap();
+        assert!((est - 0.033).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_model_prices_invalid_rejected() {
+        let yaml = r#"
+telegram_bot_token: tok
+bot_username: bot
+api_key: key
+model_prices:
+  - model: ""
+    input_per_million_usd: 1.0
+    output_per_million_usd: 1.0
+"#;
+        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
+        let err = config.post_deserialize().unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("model_prices entries must include non-empty model"));
     }
 
     #[test]

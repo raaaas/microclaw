@@ -6,12 +6,22 @@ telegram_bot_token: ""
 # Bot username without @
 bot_username: ""
 
-# LLM provider (anthropic, ollama, openai, openrouter, deepseek, google, etc.)
+# LLM provider (anthropic, openai-codex, ollama, openai, openrouter, deepseek, google, etc.)
 llm_provider: "anthropic"
-# API key for LLM provider
+# API key for LLM provider (optional for openai-codex/ollama)
 api_key: ""
 # Model name (leave empty for provider default)
 model: ""
+# Optional token pricing table for /usage cost estimation.
+# Prices are USD per 1M tokens, matched by exact model name.
+# Add a "*" row as fallback for unknown models if desired.
+# model_prices:
+#   - model: "claude-sonnet-4-5-20250929"
+#     input_per_million_usd: 3.0
+#     output_per_million_usd: 15.0
+#   - model: "*"
+#     input_per_million_usd: 0.0
+#     output_per_million_usd: 0.0
 # Custom base URL (optional, null to use provider default)
 # llm_base_url: null
 

@@ -140,6 +140,7 @@ Unavailable skills are filtered automatically by platform/dependencies, so unsup
 
 **Commands:**
 - `/skills` -- list all available skills
+- `/usage` -- show token usage summary (current chat + global totals)
 
 ## MCP
 
@@ -357,6 +358,7 @@ microclaw setup
 
 Provider presets available in the wizard:
 - `openai`
+- `openai-codex` (ChatGPT/Codex subscription OAuth; run `codex login`)
 - `openrouter`
 - `anthropic`
 - `ollama`
@@ -377,6 +379,8 @@ Provider presets available in the wizard:
 - `custom` (manual provider/model/base URL)
 
 For Ollama, `llm_base_url` defaults to `http://127.0.0.1:11434/v1`, `api_key` is optional, and the interactive setup wizard can auto-detect locally installed models.
+
+For `openai-codex`, run `codex login` first. MicroClaw will read OAuth from `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`). The default base URL is `https://chatgpt.com/backend-api`, and you can still set `api_key` as a fallback.
 
 You can still configure manually with `microclaw.config.yaml`:
 
@@ -431,10 +435,11 @@ All configuration is via `microclaw.config.yaml`:
 | Key | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `telegram_bot_token` | Yes | -- | Telegram bot token from BotFather |
-| `api_key` | Yes* | -- | LLM API key (`ollama` can leave this empty) |
+| `api_key` | Yes* | -- | LLM API key (`ollama` and `openai-codex` can leave this empty) |
 | `bot_username` | Yes | -- | Bot username (without @) |
 | `llm_provider` | No | `anthropic` | Provider preset ID (or custom ID). `anthropic` uses native Anthropic API, others use OpenAI-compatible API |
 | `model` | No | provider-specific | Model name |
+| `model_prices` | No | `[]` | Optional per-model pricing table (USD per 1M tokens) used by `/usage` cost estimates |
 | `llm_base_url` | No | provider preset default | Custom provider base URL |
 | `data_dir` | No | `./microclaw.data` | Data root (`runtime` data in `data_dir/runtime`, skills in `data_dir/skills`) |
 | `working_dir` | No | `./tmp` | Default working directory for tool operations; relative paths in `bash/read_file/write_file/edit_file/glob/grep` resolve from here |
@@ -449,7 +454,7 @@ All configuration is via `microclaw.config.yaml`:
 
 ### Supported `llm_provider` values
 
-`openai`, `openrouter`, `anthropic`, `ollama`, `google`, `alibaba`, `deepseek`, `moonshot`, `mistral`, `azure`, `bedrock`, `zhipu`, `minimax`, `cohere`, `tencent`, `xai`, `huggingface`, `together`, `custom`.
+`openai`, `openai-codex`, `openrouter`, `anthropic`, `ollama`, `google`, `alibaba`, `deepseek`, `moonshot`, `mistral`, `azure`, `bedrock`, `zhipu`, `minimax`, `cohere`, `tencent`, `xai`, `huggingface`, `together`, `custom`.
 
 ## Group chats
 
