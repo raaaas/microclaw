@@ -415,8 +415,8 @@ pub(crate) async fn process_with_agent_impl(
     };
 
     // Agentic tool-use loop
-    let mut used_any_tool = false;
     let mut failed_tools: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut empty_visible_reply_retry_attempted = false;
     for iteration in 0..state.config.max_tool_iterations {
         if let Some(tx) = event_tx {
             let _ = tx.send(AgentEvent::Iteration {
@@ -489,23 +489,31 @@ pub(crate) async fn process_with_agent_impl(
                 })
                 .collect::<Vec<_>>()
                 .join("");
-            let lower = text.to_lowercase();
-            let mentions_screenshot = lower.contains("screenshot")
-                || lower.contains("capture")
-                || lower.contains("截图")
-                || lower.contains("截屏")
-                || lower.contains("屏幕");
-            let claims_sent = lower.contains("sent")
-                || lower.contains("sending")
-                || lower.contains("已发送")
-                || lower.contains("发了")
-                || lower.contains("发出");
-            let claims_delivery = mentions_screenshot && claims_sent;
-            if claims_delivery && !used_any_tool {
+
+            // Strip <think> blocks unless show_thinking is enabled
+            let display_text = if state.config.show_thinking {
+                text.clone()
+            } else {
+                strip_thinking(&text)
+            };
+            if display_text.trim().is_empty() && !empty_visible_reply_retry_attempted {
+                empty_visible_reply_retry_attempted = true;
                 warn!(
-                    "Suspicious final response without tool_use: model claims screenshot was sent, but no tool ran in this request (chat_id={})",
+                    "Empty visible model reply; injecting runtime guard and retrying once (chat_id={})",
                     chat_id
                 );
+                messages.push(Message {
+                    role: "assistant".into(),
+                    content: MessageContent::Text(text.clone()),
+                });
+                messages.push(Message {
+                    role: "user".into(),
+                    content: MessageContent::Text(
+                        "[runtime_guard]: Your previous reply had no user-visible text. Reply again now with a concise visible answer. If tools are required, execute them first and then provide the visible result."
+                            .to_string(),
+                    ),
+                });
+                continue;
             }
 
             // Add final assistant message and save session (keep full text including thinking)
@@ -519,18 +527,12 @@ pub(crate) async fn process_with_agent_impl(
                     .await;
             }
 
-            // Strip <think> blocks unless show_thinking is enabled
-            let display_text = if state.config.show_thinking {
-                text
-            } else {
-                strip_thinking(&text)
-            };
             let final_text = if display_text.trim().is_empty() {
                 if stop_reason == "max_tokens" {
                     "I reached the model output limit before producing a visible reply. Please ask me to continue."
                         .to_string()
                 } else {
-                    "I processed your request but produced an empty visible reply. Please ask me to retry."
+                    "I couldn't produce a visible reply after an automatic retry. Please try again."
                         .to_string()
                 }
             } else {
@@ -553,7 +555,6 @@ pub(crate) async fn process_with_agent_impl(
         }
 
         if stop_reason == "tool_use" {
-            used_any_tool = true;
             let assistant_content: Vec<ContentBlock> = response
                 .content
                 .iter()
@@ -940,7 +941,10 @@ Built-in execution playbook:
 - Apply the same behavior across Telegram/Discord/Web unless a tool returns a channel-specific error.
 - Do not answer with "I can't from this runtime" unless a concrete tool attempt failed in this turn.
 - Always prefer absolute paths for files passed between tools (especially attachment_path).
-- For multi-step tasks, use todo_write at the start to create a concise task list with statuses.
+- If you will call any tool or activate any skill in this turn, you must start by calling todo_write to create a concise task list before the first tool/skill call.
+- This requirement includes activate_skill: plan the work in todo_write first, then activate and execute.
+- If no tools/skills are needed, do not create a todo list.
+- For multi-step tool/skill tasks, keep the todo list synchronized with actual execution.
 - Keep exactly one task in_progress at a time; mark it completed before moving to the next.
 - After each major step, update todo_write to reflect real progress (not planned progress).
 - Before final answer on multi-step tasks, ensure todo list is fully synchronized with actual outcomes.
@@ -1275,6 +1279,7 @@ mod tests {
     use crate::runtime::AppState;
     use crate::skills::SkillManager;
     use crate::tools::ToolRegistry;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use teloxide::prelude::Bot;
 
@@ -1298,6 +1303,47 @@ mod tests {
         }
     }
 
+    struct EmptyVisibleThenNormalLlm {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for EmptyVisibleThenNormalLlm {
+        async fn send_message(
+            &self,
+            _system: &str,
+            messages: Vec<Message>,
+            _tools: Option<Vec<ToolDefinition>>,
+        ) -> Result<MessagesResponse, MicroClawError> {
+            let idx = self.calls.fetch_add(1, Ordering::SeqCst);
+            if idx == 0 {
+                return Ok(MessagesResponse {
+                    content: vec![ResponseContentBlock::Text {
+                        text: "<think>internal only</think>".to_string(),
+                    }],
+                    stop_reason: Some("end_turn".to_string()),
+                    usage: None,
+                });
+            }
+            let saw_guard = messages.iter().any(|m| match &m.content {
+                crate::llm_types::MessageContent::Text(t) => {
+                    t.contains("[runtime_guard]: Your previous reply had no user-visible text.")
+                }
+                _ => false,
+            });
+            let text = if saw_guard {
+                "Visible retry answer.".to_string()
+            } else {
+                "Missing guard".to_string()
+            };
+            Ok(MessagesResponse {
+                content: vec![ResponseContentBlock::Text { text }],
+                stop_reason: Some("end_turn".to_string()),
+                usage: None,
+            })
+        }
+    }
+
     fn test_db() -> (Arc<Database>, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("mc_agent_engine_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1306,6 +1352,10 @@ mod tests {
     }
 
     fn test_state_with_base_dir(base_dir: &std::path::Path) -> Arc<AppState> {
+        test_state_with_llm(base_dir, Box::new(DummyLlm))
+    }
+
+    fn test_state_with_llm(base_dir: &std::path::Path, llm: Box<dyn LlmProvider>) -> Arc<AppState> {
         let runtime_dir = base_dir.join("runtime");
         std::fs::create_dir_all(&runtime_dir).unwrap();
         let mut cfg = Config {
@@ -1360,7 +1410,7 @@ mod tests {
             db: db.clone(),
             memory: MemoryManager::new(runtime_dir.to_str().unwrap()),
             skills: SkillManager::from_skills_dir(&cfg.skills_data_dir()),
-            llm: Box::new(DummyLlm),
+            llm,
             embedding: None,
             tools: ToolRegistry::new(&cfg, Some(bot), db),
         })
@@ -1576,4 +1626,41 @@ mod tests {
         drop(state);
         let _ = std::fs::remove_dir_all(&base_dir);
     }
+
+    #[tokio::test]
+    async fn test_empty_visible_reply_auto_retries_once() {
+        let base_dir =
+            std::env::temp_dir().join(format!("mc_agent_empty_retry_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base_dir).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let llm = EmptyVisibleThenNormalLlm {
+            calls: calls.clone(),
+        };
+        let state = test_state_with_llm(&base_dir, Box::new(llm));
+        let chat_id = state
+            .db
+            .resolve_or_create_chat_id("web", "empty-retry-chat", Some("empty"), "web")
+            .unwrap();
+        store_user_message(&state.db, chat_id, "hello");
+
+        let reply = process_with_agent(
+            &state,
+            AgentRequestContext {
+                caller_channel: "web",
+                chat_id,
+                chat_type: "web",
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply, "Visible retry answer.");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
 }

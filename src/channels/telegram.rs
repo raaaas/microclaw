@@ -5,7 +5,9 @@ use teloxide::prelude::*;
 use teloxide::types::{ChatAction, ParseMode};
 use tracing::{error, info, warn};
 
-use crate::agent_engine::{archive_conversation, process_with_agent, AgentRequestContext};
+use crate::agent_engine::{
+    archive_conversation, process_with_agent_with_events, AgentEvent, AgentRequestContext,
+};
 use crate::db::{call_blocking, StoredMessage};
 use crate::llm_types::Message;
 #[cfg(test)]
@@ -472,7 +474,8 @@ async fn handle_message(
     });
 
     // Process through platform-agnostic agent engine.
-    match process_with_agent(
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+    match process_with_agent_with_events(
         &state,
         AgentRequestContext {
             caller_channel: "telegram",
@@ -481,11 +484,21 @@ async fn handle_message(
         },
         None,
         image_data,
+        Some(&event_tx),
     )
     .await
     {
         Ok(response) => {
             typing_handle.abort();
+            drop(event_tx);
+            let mut used_send_message_tool = false;
+            while let Some(event) = event_rx.recv().await {
+                if let AgentEvent::ToolStart { name } = event {
+                    if name == "send_message" {
+                        used_send_message_tool = true;
+                    }
+                }
+            }
 
             if !response.is_empty() {
                 send_response(&bot, msg.chat.id, &response).await;
@@ -501,12 +514,24 @@ async fn handle_message(
                 };
                 let _ = call_blocking(state.db.clone(), move |db| db.store_message(&bot_msg)).await;
             }
-            // If response is empty, agent likely used send_message tool directly
-            else {
+            // If response is empty, agent likely delivered via send_message tool directly.
+            else if used_send_message_tool {
                 info!(
                     "Agent returned empty final response for chat {}; likely delivered via send_message tool",
                     chat_id
                 );
+            } else {
+                let fallback = "I couldn't produce a visible reply after an automatic retry. Please try again.".to_string();
+                send_response(&bot, msg.chat.id, &fallback).await;
+                let bot_msg = StoredMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    chat_id,
+                    sender_name: state.config.bot_username.clone(),
+                    content: fallback,
+                    is_from_bot: true,
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                };
+                let _ = call_blocking(state.db.clone(), move |db| db.store_message(&bot_msg)).await;
             }
         }
         Err(e) => {

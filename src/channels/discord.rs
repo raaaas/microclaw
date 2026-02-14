@@ -8,7 +8,8 @@ use serenity::prelude::*;
 use tracing::{error, info, warn};
 
 use crate::agent_engine::archive_conversation;
-use crate::agent_engine::process_with_agent;
+use crate::agent_engine::process_with_agent_with_events;
+use crate::agent_engine::AgentEvent;
 use crate::agent_engine::AgentRequestContext;
 use crate::db::call_blocking;
 use crate::db::StoredMessage;
@@ -185,8 +186,9 @@ impl EventHandler for Handler {
         // Start typing indicator
         let typing = msg.channel_id.start_typing(&ctx.http);
 
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
         // Process with shared agent engine (reuses the same loop as Telegram)
-        match process_with_agent(
+        match process_with_agent_with_events(
             &self.app_state,
             AgentRequestContext {
                 caller_channel: "discord",
@@ -199,11 +201,22 @@ impl EventHandler for Handler {
             },
             None,
             None,
+            Some(&event_tx),
         )
         .await
         {
             Ok(response) => {
                 drop(typing);
+                drop(event_tx);
+                let mut used_send_message_tool = false;
+                while let Some(event) = event_rx.recv().await {
+                    if let AgentEvent::ToolStart { name } = event {
+                        if name == "send_message" {
+                            used_send_message_tool = true;
+                        }
+                    }
+                }
+
                 if !response.is_empty() {
                     send_discord_response(&ctx, msg.channel_id, &response).await;
 
@@ -213,6 +226,22 @@ impl EventHandler for Handler {
                         chat_id: channel_id,
                         sender_name: self.app_state.config.bot_username.clone(),
                         content: response,
+                        is_from_bot: true,
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                    };
+                    let _ = call_blocking(self.app_state.db.clone(), move |db| {
+                        db.store_message(&bot_msg)
+                    })
+                    .await;
+                } else if !used_send_message_tool {
+                    let fallback = "I couldn't produce a visible reply after an automatic retry. Please try again.".to_string();
+                    send_discord_response(&ctx, msg.channel_id, &fallback).await;
+
+                    let bot_msg = StoredMessage {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        chat_id: channel_id,
+                        sender_name: self.app_state.config.bot_username.clone(),
+                        content: fallback,
                         is_from_bot: true,
                         timestamp: chrono::Utc::now().to_rfc3339(),
                     };
