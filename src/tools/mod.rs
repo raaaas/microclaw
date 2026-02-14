@@ -224,6 +224,7 @@ pub trait Tool: Send + Sync {
 
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
+    cached_definitions: OnceLock<Vec<ToolDefinition>>,
 }
 
 pub fn resolve_tool_path(working_dir: &Path, path: &str) -> PathBuf {
@@ -355,7 +356,10 @@ impl ToolRegistry {
                 db.clone(),
             )),
         ];
-        ToolRegistry { tools }
+        ToolRegistry {
+            tools,
+            cached_definitions: OnceLock::new(),
+        }
     }
 
     /// Create a restricted tool registry for sub-agents (no side-effect or recursive tools).
@@ -401,15 +405,21 @@ impl ToolRegistry {
             Box::new(activate_skill::ActivateSkillTool::new(&skills_data_dir)),
             Box::new(structured_memory::StructuredMemorySearchTool::new(db)),
         ];
-        ToolRegistry { tools }
+        ToolRegistry {
+            tools,
+            cached_definitions: OnceLock::new(),
+        }
     }
 
     pub fn add_tool(&mut self, tool: Box<dyn Tool>) {
+        // Invalidate cache when a new tool is added
+        self.cached_definitions = OnceLock::new();
         self.tools.push(tool);
     }
 
-    pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.iter().map(|t| t.definition()).collect()
+    pub fn definitions(&self) -> &[ToolDefinition] {
+        self.cached_definitions
+            .get_or_init(|| self.tools.iter().map(|t| t.definition()).collect())
     }
 
     pub async fn execute(&self, name: &str, input: serde_json::Value) -> ToolResult {
@@ -635,6 +645,7 @@ mod tests {
     #[tokio::test]
     async fn test_high_risk_tool_requires_second_approval_on_web() {
         let registry = ToolRegistry {
+            cached_definitions: OnceLock::new(),
             tools: vec![Box::new(DummyTool {
                 tool_name: "bash".into(),
             })],
@@ -664,6 +675,7 @@ mod tests {
     #[tokio::test]
     async fn test_high_risk_tool_requires_second_approval_on_control_chat() {
         let registry = ToolRegistry {
+            cached_definitions: OnceLock::new(),
             tools: vec![Box::new(DummyTool {
                 tool_name: "bash".into(),
             })],
@@ -682,6 +694,7 @@ mod tests {
     #[tokio::test]
     async fn test_medium_risk_tool_no_second_approval() {
         let registry = ToolRegistry {
+            cached_definitions: OnceLock::new(),
             tools: vec![Box::new(DummyTool {
                 tool_name: "write_file".into(),
             })],

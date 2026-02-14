@@ -99,3 +99,8 @@ web_rate_window_seconds: 10
 web_run_history_limit: 512
 # Idle cleanup TTL for web session quota/locks (seconds)
 web_session_idle_ttl_seconds: 300
+
+# Soul file: defines your bot's personality, voice, values, and behavior.
+# Supports markdown format. If not set, checks data_dir/SOUL.md then ./SOUL.md.
+# Per-chat overrides: place SOUL.md in <data_dir>/runtime/groups/<chat_id>/SOUL.md
+# soul_path: "./SOUL.md"

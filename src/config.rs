@@ -90,6 +90,9 @@ fn default_reflector_enabled() -> bool {
 fn default_reflector_interval_mins() -> u64 {
     15
 }
+fn default_soul_path() -> Option<String> {
+    None
+}
 fn is_local_web_host(host: &str) -> bool {
     let h = host.trim().to_ascii_lowercase();
     h == "127.0.0.1" || h == "localhost" || h == "::1"
@@ -191,6 +194,10 @@ pub struct Config {
     pub reflector_enabled: bool,
     #[serde(default = "default_reflector_interval_mins")]
     pub reflector_interval_mins: u64,
+    /// Path to a SOUL.md file that defines the bot's personality, voice, and values.
+    /// If not set, looks for SOUL.md in data_dir root, then current directory.
+    #[serde(default = "default_soul_path")]
+    pub soul_path: Option<String>,
 }
 
 impl Config {
@@ -491,6 +498,7 @@ mod tests {
             embedding_dim: None,
             reflector_enabled: true,
             reflector_interval_mins: 15,
+            soul_path: None,
         }
     }
 

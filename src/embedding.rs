@@ -255,6 +255,7 @@ mod tests {
             embedding_dim: None,
             reflector_enabled: true,
             reflector_interval_mins: 15,
+            soul_path: None,
         }
     }
 

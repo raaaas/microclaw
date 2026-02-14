@@ -862,7 +862,7 @@ mod tests {
 
     #[test]
     fn test_build_system_prompt_basic() {
-        let prompt = build_system_prompt("testbot", "telegram", "", 12345, "");
+        let prompt = build_system_prompt("testbot", "telegram", "", 12345, "", None);
         assert!(prompt.contains("testbot"));
         assert!(prompt.contains("12345"));
         assert!(prompt.contains("bash commands"));
@@ -873,7 +873,7 @@ mod tests {
     #[test]
     fn test_build_system_prompt_with_memory() {
         let memory = "<global_memory>\nUser likes Rust\n</global_memory>";
-        let prompt = build_system_prompt("testbot", "telegram", memory, 42, "");
+        let prompt = build_system_prompt("testbot", "telegram", memory, 42, "", None);
         assert!(prompt.contains("# Memories"));
         assert!(prompt.contains("User likes Rust"));
     }
@@ -881,7 +881,7 @@ mod tests {
     #[test]
     fn test_build_system_prompt_with_skills() {
         let catalog = "<available_skills>\n- pdf: Convert to PDF\n</available_skills>";
-        let prompt = build_system_prompt("testbot", "telegram", "", 42, catalog);
+        let prompt = build_system_prompt("testbot", "telegram", "", 42, catalog, None);
         assert!(prompt.contains("# Agent Skills"));
         assert!(prompt.contains("activate_skill"));
         assert!(prompt.contains("pdf: Convert to PDF"));
@@ -889,7 +889,7 @@ mod tests {
 
     #[test]
     fn test_build_system_prompt_without_skills() {
-        let prompt = build_system_prompt("testbot", "telegram", "", 42, "");
+        let prompt = build_system_prompt("testbot", "telegram", "", 42, "", None);
         assert!(!prompt.contains("# Agent Skills"));
     }
 
@@ -1174,7 +1174,7 @@ mod tests {
 
     #[test]
     fn test_build_system_prompt_mentions_sub_agent() {
-        let prompt = build_system_prompt("testbot", "telegram", "", 12345, "");
+        let prompt = build_system_prompt("testbot", "telegram", "", 12345, "", None);
         assert!(prompt.contains("sub_agent"));
     }
 
@@ -1209,7 +1209,7 @@ mod tests {
 
     #[test]
     fn test_build_system_prompt_mentions_xml_security() {
-        let prompt = build_system_prompt("testbot", "telegram", "", 12345, "");
+        let prompt = build_system_prompt("testbot", "telegram", "", 12345, "", None);
         assert!(prompt.contains("user_message"));
         assert!(prompt.contains("untrusted"));
     }
@@ -1403,7 +1403,7 @@ mod tests {
     fn test_build_system_prompt_with_memory_and_skills() {
         let memory = "<global_memory>\nTest\n</global_memory>";
         let skills = "- translate: Translate text";
-        let prompt = build_system_prompt("bot", "telegram", memory, 42, skills);
+        let prompt = build_system_prompt("bot", "telegram", memory, 42, skills, None);
         assert!(prompt.contains("# Memories"));
         assert!(prompt.contains("Test"));
         assert!(prompt.contains("# Agent Skills"));
@@ -1412,20 +1412,20 @@ mod tests {
 
     #[test]
     fn test_build_system_prompt_mentions_todo() {
-        let prompt = build_system_prompt("testbot", "telegram", "", 12345, "");
+        let prompt = build_system_prompt("testbot", "telegram", "", 12345, "", None);
         assert!(prompt.contains("todo_read"));
         assert!(prompt.contains("todo_write"));
     }
 
     #[test]
     fn test_build_system_prompt_mentions_export() {
-        let prompt = build_system_prompt("testbot", "telegram", "", 12345, "");
+        let prompt = build_system_prompt("testbot", "telegram", "", 12345, "", None);
         assert!(prompt.contains("export_chat"));
     }
 
     #[test]
     fn test_build_system_prompt_mentions_schedule() {
-        let prompt = build_system_prompt("testbot", "telegram", "", 12345, "");
+        let prompt = build_system_prompt("testbot", "telegram", "", 12345, "", None);
         assert!(prompt.contains("schedule_task"));
         assert!(prompt.contains("6-field cron"));
     }

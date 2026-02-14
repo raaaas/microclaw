@@ -1991,6 +1991,7 @@ mod tests {
             embedding_dim: None,
             reflector_enabled: true,
             reflector_interval_mins: 15,
+            soul_path: None,
         };
         // Should not panic
         let _provider = create_provider(&config);
@@ -2039,6 +2040,7 @@ mod tests {
             embedding_dim: None,
             reflector_enabled: true,
             reflector_interval_mins: 15,
+            soul_path: None,
         };
         let _provider = create_provider(&config);
     }
@@ -2152,6 +2154,7 @@ mod tests {
             embedding_dim: None,
             reflector_enabled: true,
             reflector_interval_mins: 15,
+            soul_path: None,
         };
         let provider = OpenAiProvider::new(&config);
         let messages = vec![Message {
@@ -2304,6 +2307,7 @@ mod tests {
             embedding_dim: None,
             reflector_enabled: true,
             reflector_interval_mins: 15,
+            soul_path: None,
         };
         let provider = OpenAiProvider::new(&config);
         let messages = vec![Message {

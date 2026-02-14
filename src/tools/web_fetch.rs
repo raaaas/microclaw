@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -5,6 +7,18 @@ use super::web_html::{extract_primary_html, html_to_text};
 use super::{schema_object, Tool, ToolResult};
 use crate::llm_types::ToolDefinition;
 use crate::text::floor_char_boundary;
+
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .user_agent("MicroClaw/1.0")
+            .build()
+            .expect("failed to build HTTP client")
+    })
+}
 
 pub struct WebFetchTool;
 
@@ -46,15 +60,8 @@ impl Tool for WebFetchTool {
 }
 
 async fn fetch_url(url: &str) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let resp = client
+    let resp = http_client()
         .get(url)
-        .header("User-Agent", "MicroClaw/1.0")
         .send()
         .await
         .map_err(|e| e.to_string())?;

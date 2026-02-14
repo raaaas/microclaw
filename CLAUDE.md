@@ -49,6 +49,7 @@ Rust 2021, Tokio, teloxide 0.17, serenity 0.12, Anthropic Messages API (direct H
 - **Typing**: spawned task sends typing action every 4s, aborted when response is ready
 - **Path guard**: sensitive paths (.ssh, .aws, .env, credentials, etc.) are blocked in file tools via `path_guard` module
 - **Platform-extensible core**: Telegram/Discord/Web adapters reuse `process_with_claude`; new platforms integrate through the same core loop
+- **SOUL.md**: optional personality file injected into system prompt. Loaded from `soul_path` config, `data_dir/SOUL.md`, or `./SOUL.md`. Per-chat overrides via `data_dir/runtime/groups/{chat_id}/SOUL.md`
 
 ## Build & run
 
@@ -62,6 +63,19 @@ cargo run -- help
 ## Configuration
 
 MicroClaw uses `microclaw.config.yaml` (or `.yml`) for configuration. Override the path with `MICROCLAW_CONFIG` env var. See `microclaw.config.example.yaml` for all available fields.
+
+## Soul (personality customization)
+
+MicroClaw supports a `SOUL.md` file that defines the bot's personality, voice, values, and working style. The file content is injected into the system prompt, replacing the default "helpful AI assistant" identity.
+
+**Loading priority** (first match wins):
+1. `soul_path` in config (explicit path)
+2. `<data_dir>/SOUL.md`
+3. `./SOUL.md` (project root, ships with the repo as the default soul)
+
+**Per-chat override**: place a `SOUL.md` at `<data_dir>/runtime/groups/<chat_id>/SOUL.md` to give a specific chat a different personality.
+
+**Implementation**: `load_soul_content()` and `build_system_prompt()` in `src/agent_engine.rs`. The soul content is wrapped in `<soul>` XML tags in the system prompt.
 
 ## Adding a tool
 

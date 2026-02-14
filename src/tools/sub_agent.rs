@@ -67,7 +67,7 @@ impl Tool for SubAgentTool {
 
         let llm = crate::llm::create_provider(&self.config);
         let tools = ToolRegistry::new_sub_agent(&self.config, self.db.clone());
-        let tool_defs = tools.definitions();
+        let tool_defs = tools.definitions().to_vec();
 
         let system_prompt = "You are a sub-agent assistant. Complete the given task thoroughly and return a clear, concise result. You have access to tools for file operations, search, and web access. Focus on the task and provide actionable output.".to_string();
 
@@ -260,6 +260,7 @@ mod tests {
             embedding_dim: None,
             reflector_enabled: true,
             reflector_interval_mins: 15,
+            soul_path: None,
         }
     }
 

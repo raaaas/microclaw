@@ -114,10 +114,17 @@ pub async fn process_with_agent_with_events(
 }
 
 fn sanitize_xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn format_user_message(sender_name: &str, content: &str) -> String {
@@ -352,12 +359,14 @@ pub(crate) async fn process_with_agent_impl(
     .await;
     let memory_context = format!("{}{}", file_memory, db_memory);
     let skills_catalog = state.skills.build_skills_catalog();
+    let soul_content = load_soul_content(&state.config, chat_id);
     let system_prompt = build_system_prompt(
         &state.config.bot_username,
         context.caller_channel,
         &memory_context,
         chat_id,
         &skills_catalog,
+        soul_content.as_deref(),
     );
 
     // If image_data is present, convert the last user message to a blocks-based message with the image
@@ -406,7 +415,7 @@ pub(crate) async fn process_with_agent_impl(
         .await;
     }
 
-    let tool_defs = state.tools.definitions();
+    let tool_defs = state.tools.definitions().to_vec();
     let tool_auth = ToolAuthContext {
         caller_channel: context.caller_channel.to_string(),
         caller_chat_id: chat_id,
@@ -755,11 +764,10 @@ fn tokenize_for_relevance(text: &str) -> std::collections::HashSet<String> {
     out
 }
 
-fn score_relevance(content: &str, query: &str) -> usize {
-    if query.is_empty() {
-        return 0;
-    }
-    let query_tokens = tokenize_for_relevance(query);
+fn score_relevance_with_cache(
+    content: &str,
+    query_tokens: &std::collections::HashSet<String>,
+) -> usize {
     if query_tokens.is_empty() {
         return 0;
     }
@@ -829,10 +837,11 @@ pub(crate) async fn build_db_memory_context(
 
     if ordered.is_empty() {
         // Score by relevance to current query; preserve recency for ties.
+        let query_tokens = tokenize_for_relevance(query);
         let mut scored: Vec<(usize, usize, &crate::db::Memory)> = memories
             .iter()
             .enumerate()
-            .map(|(idx, m)| (score_relevance(&m.content, query), idx, m))
+            .map(|(idx, m)| (score_relevance_with_cache(&m.content, &query_tokens), idx, m))
             .collect();
         if !query.is_empty() {
             scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
@@ -887,17 +896,80 @@ pub(crate) async fn build_db_memory_context(
     out
 }
 
+/// Load the SOUL.md content for personality customization.
+/// Checks in order: explicit soul_path from config, data_dir/SOUL.md, ./SOUL.md.
+/// Also supports per-chat soul files at data_dir/groups/{chat_id}/SOUL.md.
+pub(crate) fn load_soul_content(config: &crate::config::Config, chat_id: i64) -> Option<String> {
+    let mut global_soul: Option<String> = None;
+
+    // 1. Explicit path from config
+    if let Some(ref path) = config.soul_path {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if !content.trim().is_empty() {
+                global_soul = Some(content);
+            }
+        }
+    }
+
+    // 2. data_dir/SOUL.md
+    if global_soul.is_none() {
+        let data_soul = std::path::PathBuf::from(&config.data_dir).join("SOUL.md");
+        if let Ok(content) = std::fs::read_to_string(&data_soul) {
+            if !content.trim().is_empty() {
+                global_soul = Some(content);
+            }
+        }
+    }
+
+    // 3. ./SOUL.md in current directory
+    if global_soul.is_none() {
+        if let Ok(content) = std::fs::read_to_string("SOUL.md") {
+            if !content.trim().is_empty() {
+                global_soul = Some(content);
+            }
+        }
+    }
+
+    // 4. Per-chat override: data_dir/runtime/groups/{chat_id}/SOUL.md
+    let chat_soul_path = std::path::PathBuf::from(config.runtime_data_dir())
+        .join("groups")
+        .join(chat_id.to_string())
+        .join("SOUL.md");
+    if let Ok(chat_soul) = std::fs::read_to_string(&chat_soul_path) {
+        if !chat_soul.trim().is_empty() {
+            // Per-chat soul overrides global soul entirely
+            return Some(chat_soul);
+        }
+    }
+
+    global_soul
+}
+
 pub(crate) fn build_system_prompt(
     bot_username: &str,
     caller_channel: &str,
     memory_context: &str,
     chat_id: i64,
     skills_catalog: &str,
+    soul_content: Option<&str>,
 ) -> String {
-    let mut prompt = format!(
-        r#"You are {bot_username}, a helpful AI assistant across chat channels. You can execute tools to help users with tasks.
+    // If a SOUL.md is provided, use it as the identity preamble instead of the default
+    let identity = if let Some(soul) = soul_content {
+        format!(
+            r#"<soul>
+{soul}
+</soul>
 
-Current channel: {caller_channel}.
+Your name is {bot_username}. Current channel: {caller_channel}."#
+        )
+    } else {
+        format!(
+            "You are {bot_username}, a helpful AI assistant across chat channels. You can execute tools to help users with tasks.\n\nCurrent channel: {caller_channel}."
+        )
+    };
+
+    let mut prompt = format!(
+        r#"{identity}
 
 You have access to the following capabilities:
 - Execute bash commands
@@ -1398,6 +1470,7 @@ mod tests {
             embedding_dim: None,
             reflector_enabled: true,
             reflector_interval_mins: 15,
+            soul_path: None,
         };
         cfg.data_dir = base_dir.to_string_lossy().to_string();
         cfg.working_dir = base_dir.join("tmp").to_string_lossy().to_string();
@@ -1659,6 +1732,144 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
 
         drop(state);
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    #[test]
+    fn test_build_system_prompt_with_soul() {
+        let soul = "I am a friendly pirate assistant. I speak in pirate lingo and love adventure.";
+        let prompt =
+            super::build_system_prompt("testbot", "telegram", "", 42, "", Some(soul));
+        assert!(prompt.contains("<soul>"));
+        assert!(prompt.contains("pirate"));
+        assert!(prompt.contains("</soul>"));
+        assert!(prompt.contains("testbot"));
+        // Should NOT contain the default identity when soul is provided
+        assert!(!prompt.contains("a helpful AI assistant across chat channels"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_without_soul() {
+        let prompt = super::build_system_prompt("testbot", "telegram", "", 42, "", None);
+        assert!(!prompt.contains("<soul>"));
+        assert!(prompt.contains("a helpful AI assistant across chat channels"));
+    }
+
+    #[test]
+    fn test_load_soul_content_from_data_dir() {
+        let base_dir =
+            std::env::temp_dir().join(format!("mc_soul_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base_dir).unwrap();
+        let soul_path = base_dir.join("SOUL.md");
+        std::fs::write(&soul_path, "I am a wise owl assistant.").unwrap();
+
+        let config = Config {
+            data_dir: base_dir.to_string_lossy().to_string(),
+            soul_path: None,
+            telegram_bot_token: "tok".into(),
+            bot_username: "bot".into(),
+            llm_provider: "anthropic".into(),
+            api_key: "key".into(),
+            model: "test".into(),
+            llm_base_url: None,
+            max_tokens: 8192,
+            max_tool_iterations: 100,
+            max_history_messages: 50,
+            max_document_size_mb: 100,
+            memory_token_budget: 1500,
+            working_dir: "./tmp".into(),
+            working_dir_isolation: WorkingDirIsolation::Shared,
+            openai_api_key: None,
+            timezone: "UTC".into(),
+            allowed_groups: vec![],
+            control_chat_ids: vec![],
+            max_session_messages: 40,
+            compact_keep_recent: 20,
+            discord_bot_token: None,
+            discord_allowed_channels: vec![],
+            show_thinking: false,
+            web_enabled: false,
+            web_host: "127.0.0.1".into(),
+            web_port: 0,
+            web_auth_token: None,
+            web_max_inflight_per_session: 2,
+            web_max_requests_per_window: 8,
+            web_rate_window_seconds: 10,
+            web_run_history_limit: 512,
+            web_session_idle_ttl_seconds: 300,
+            model_prices: vec![],
+            embedding_provider: None,
+            embedding_api_key: None,
+            embedding_base_url: None,
+            embedding_model: None,
+            embedding_dim: None,
+            reflector_enabled: true,
+            reflector_interval_mins: 15,
+        };
+
+        let soul = super::load_soul_content(&config, 999);
+        assert!(soul.is_some());
+        assert!(soul.unwrap().contains("wise owl"));
+
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    #[test]
+    fn test_load_soul_content_explicit_path() {
+        let base_dir =
+            std::env::temp_dir().join(format!("mc_soul_explicit_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base_dir).unwrap();
+        let soul_file = base_dir.join("custom_soul.md");
+        std::fs::write(&soul_file, "I am a custom personality.").unwrap();
+
+        let config = Config {
+            data_dir: base_dir.to_string_lossy().to_string(),
+            soul_path: Some(soul_file.to_string_lossy().to_string()),
+            telegram_bot_token: "tok".into(),
+            bot_username: "bot".into(),
+            llm_provider: "anthropic".into(),
+            api_key: "key".into(),
+            model: "test".into(),
+            llm_base_url: None,
+            max_tokens: 8192,
+            max_tool_iterations: 100,
+            max_history_messages: 50,
+            max_document_size_mb: 100,
+            memory_token_budget: 1500,
+            working_dir: "./tmp".into(),
+            working_dir_isolation: WorkingDirIsolation::Shared,
+            openai_api_key: None,
+            timezone: "UTC".into(),
+            allowed_groups: vec![],
+            control_chat_ids: vec![],
+            max_session_messages: 40,
+            compact_keep_recent: 20,
+            discord_bot_token: None,
+            discord_allowed_channels: vec![],
+            show_thinking: false,
+            web_enabled: false,
+            web_host: "127.0.0.1".into(),
+            web_port: 0,
+            web_auth_token: None,
+            web_max_inflight_per_session: 2,
+            web_max_requests_per_window: 8,
+            web_rate_window_seconds: 10,
+            web_run_history_limit: 512,
+            web_session_idle_ttl_seconds: 300,
+            model_prices: vec![],
+            embedding_provider: None,
+            embedding_api_key: None,
+            embedding_base_url: None,
+            embedding_model: None,
+            embedding_dim: None,
+            reflector_enabled: true,
+            reflector_interval_mins: 15,
+        };
+
+        let soul = super::load_soul_content(&config, 999);
+        assert!(soul.is_some());
+        assert!(soul.unwrap().contains("custom personality"));
+
         let _ = std::fs::remove_dir_all(&base_dir);
     }
 }
