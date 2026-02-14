@@ -16,7 +16,6 @@ pub struct AgentRequestContext<'a> {
     pub chat_id: i64,
     pub chat_type: &'a str,
 }
-
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     Iteration {
@@ -1662,5 +1661,4 @@ mod tests {
         drop(state);
         let _ = std::fs::remove_dir_all(&base_dir);
     }
-
 }
