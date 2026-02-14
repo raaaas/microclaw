@@ -17,6 +17,54 @@ require_cmd() {
   fi
 }
 
+wait_for_ci_success() {
+  local github_repo="$1"
+  local commit_sha="$2"
+  local timeout_seconds="${CI_WAIT_TIMEOUT_SECONDS:-1800}"
+  local interval_seconds="${CI_WAIT_INTERVAL_SECONDS:-20}"
+  local elapsed=0
+
+  echo "Waiting for CI success on commit: $commit_sha"
+  while [ "$elapsed" -lt "$timeout_seconds" ]; do
+    local success_run_id
+    success_run_id="$(
+      gh run list \
+        --repo "$github_repo" \
+        --workflow "CI" \
+        --commit "$commit_sha" \
+        --json databaseId,conclusion \
+        --jq '[.[] | select(.conclusion == "success")] | first | .databaseId'
+    )"
+
+    if [ -n "$success_run_id" ] && [ "$success_run_id" != "null" ]; then
+      echo "CI succeeded. Run id: $success_run_id"
+      return 0
+    fi
+
+    local failed_run_url
+    failed_run_url="$(
+      gh run list \
+        --repo "$github_repo" \
+        --workflow "CI" \
+        --commit "$commit_sha" \
+        --json conclusion,url \
+        --jq '[.[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure" or .conclusion == "stale")] | first | .url'
+    )"
+
+    if [ -n "$failed_run_url" ] && [ "$failed_run_url" != "null" ]; then
+      echo "CI failed for commit $commit_sha: $failed_run_url" >&2
+      return 1
+    fi
+
+    echo "CI not successful yet. Slept ${elapsed}s/${timeout_seconds}s."
+    sleep "$interval_seconds"
+    elapsed=$((elapsed + interval_seconds))
+  done
+
+  echo "Timed out waiting for CI success after ${timeout_seconds}s." >&2
+  return 1
+}
+
 REPO_DIR=""
 TAP_DIR=""
 TAP_REPO=""
@@ -68,20 +116,34 @@ fi
 
 cd "$REPO_DIR"
 
-if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-  echo "Tag $TAG does not exist on origin yet." >&2
-  echo "Tag creation is handled by CI auto-tag. Re-run after CI finishes." >&2
+RELEASE_COMMIT_SHA="$(git rev-parse HEAD)"
+if ! wait_for_ci_success "$GITHUB_REPO" "$RELEASE_COMMIT_SHA"; then
   exit 1
 fi
 
-if ! gh release view "$TAG" --repo "$GITHUB_REPO" >/dev/null 2>&1; then
-  echo "Release $TAG does not exist yet." >&2
-  echo "Release creation is handled by CI release workflow. Re-run after it completes." >&2
-  exit 1
+if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+  echo "Tag already exists on origin: $TAG"
+else
+  if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+    echo "Tag already exists locally: $TAG"
+  else
+    git tag "$TAG" "$RELEASE_COMMIT_SHA"
+    echo "Created local tag: $TAG -> $RELEASE_COMMIT_SHA"
+  fi
+  git push origin "refs/tags/$TAG"
+  echo "Pushed tag: $TAG"
 fi
 
-echo "Release $TAG exists. Uploading/overwriting asset."
-gh release upload "$TAG" "$TARBALL_PATH" --repo "$GITHUB_REPO" --clobber
+if gh release view "$TAG" --repo "$GITHUB_REPO" >/dev/null 2>&1; then
+  echo "Release $TAG exists. Uploading/overwriting asset."
+  gh release upload "$TAG" "$TARBALL_PATH" --repo "$GITHUB_REPO" --clobber
+else
+  echo "Release $TAG does not exist. Creating release and uploading asset."
+  gh release create "$TAG" "$TARBALL_PATH" \
+    --repo "$GITHUB_REPO" \
+    -t "$TAG" \
+    -n "MicroClaw $TAG"
+fi
 
 if [ ! -d "$TAP_DIR/.git" ]; then
   echo "Cloning tap repo..."
