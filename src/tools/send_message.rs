@@ -6,7 +6,9 @@ use serde_json::json;
 use tracing::{info, warn};
 
 use super::{authorize_chat_access, schema_object, Tool, ToolResult};
-use crate::channel::{deliver_and_store_bot_message, enforce_channel_policy, get_required_chat_routing};
+use crate::channel::{
+    deliver_and_store_bot_message, enforce_channel_policy, get_required_chat_routing,
+};
 use crate::channel_adapter::ChannelRegistry;
 use crate::db::{call_blocking, Database, StoredMessage};
 use crate::llm_types::ToolDefinition;
@@ -118,15 +120,18 @@ impl Tool for SendMessageTool {
             return ToolResult::error(e);
         }
 
-        if let Err(e) = enforce_channel_policy(&self.registry, self.db.clone(), &input, chat_id).await {
+        if let Err(e) =
+            enforce_channel_policy(&self.registry, self.db.clone(), &input, chat_id).await
+        {
             return ToolResult::error(e);
         }
 
         if let Some(path) = attachment_path {
-            let routing = match get_required_chat_routing(&self.registry, self.db.clone(), chat_id).await {
-                Ok(v) => v,
-                Err(e) => return ToolResult::error(e),
-            };
+            let routing =
+                match get_required_chat_routing(&self.registry, self.db.clone(), chat_id).await {
+                    Ok(v) => v,
+                    Err(e) => return ToolResult::error(e),
+                };
             info!(
                 "send_message attachment routing: chat_id={}, channel={}, path={}",
                 chat_id, routing.channel_name, path
@@ -171,11 +176,7 @@ impl Tool for SendMessageTool {
             };
 
             let send_result = adapter
-                .send_attachment(
-                    &external_chat_id,
-                    &file_path,
-                    used_caption.as_deref(),
-                )
+                .send_attachment(&external_chat_id, &file_path, used_caption.as_deref())
                 .await;
 
             match send_result {
@@ -233,9 +234,9 @@ impl Tool for SendMessageTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use crate::channel_adapter::ChannelRegistry;
     use crate::web::WebAdapter;
+    use serde_json::json;
 
     fn test_db() -> (Arc<Database>, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("microclaw_sendmsg_{}", uuid::Uuid::new_v4()));
@@ -307,8 +308,8 @@ mod tests {
         let mut registry = ChannelRegistry::new();
         registry.register(Arc::new(WebAdapter));
         // Register a minimal telegram adapter to resolve "private" chat type
-        use crate::channels::TelegramAdapter;
         use crate::channels::telegram::TelegramChannelConfig;
+        use crate::channels::TelegramAdapter;
         let tg_adapter = TelegramAdapter::new(
             teloxide::Bot::new("123456:TEST_TOKEN"),
             TelegramChannelConfig {

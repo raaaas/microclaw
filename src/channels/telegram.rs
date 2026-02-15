@@ -96,12 +96,9 @@ impl ChannelAdapter for TelegramAdapter {
     }
 
     async fn send_text(&self, external_chat_id: &str, text: &str) -> Result<(), String> {
-        let telegram_chat_id = external_chat_id.parse::<i64>().map_err(|_| {
-            format!(
-                "Invalid Telegram external_chat_id '{}'",
-                external_chat_id
-            )
-        })?;
+        let telegram_chat_id = external_chat_id
+            .parse::<i64>()
+            .map_err(|_| format!("Invalid Telegram external_chat_id '{}'", external_chat_id))?;
         send_response(&self.bot, ChatId(telegram_chat_id), text).await;
         Ok(())
     }
@@ -112,15 +109,11 @@ impl ChannelAdapter for TelegramAdapter {
         file_path: &Path,
         caption: Option<&str>,
     ) -> Result<String, String> {
-        let telegram_chat_id = external_chat_id.parse::<i64>().map_err(|_| {
-            format!(
-                "Invalid Telegram external_chat_id '{}'",
-                external_chat_id
-            )
-        })?;
+        let telegram_chat_id = external_chat_id
+            .parse::<i64>()
+            .map_err(|_| format!("Invalid Telegram external_chat_id '{}'", external_chat_id))?;
 
-        let (caption_for_attachment, overflow_text) =
-            Self::split_telegram_caption(caption);
+        let (caption_for_attachment, overflow_text) = Self::split_telegram_caption(caption);
 
         if Self::is_likely_image(file_path) {
             let mut req = self

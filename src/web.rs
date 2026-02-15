@@ -18,8 +18,8 @@ use tracing::{error, info};
 use crate::agent_engine::{
     process_with_agent, process_with_agent_with_events, AgentEvent, AgentRequestContext,
 };
-use crate::channel::{deliver_and_store_bot_message, get_chat_routing, session_source_for_chat};
 use crate::channel::ConversationKind;
+use crate::channel::{deliver_and_store_bot_message, get_chat_routing, session_source_for_chat};
 use crate::channel_adapter::{ChannelAdapter, ChannelRegistry};
 use crate::config::{Config, WorkingDirIsolation};
 use crate::db::{call_blocking, ChatSummary, StoredMessage};
@@ -436,12 +436,11 @@ struct UpdateConfigRequest {
     discord_bot_token: Option<String>,
     discord_allowed_channels: Option<Vec<u64>>,
 
-    slack_bot_token: Option<String>,
-    slack_app_token: Option<String>,
-
-    feishu_app_id: Option<String>,
-    feishu_app_secret: Option<String>,
-    feishu_domain: Option<String>,
+    /// Generic per-channel config updates. Keys are channel names (e.g. "slack", "feishu").
+    /// Values are objects with channel-specific fields. Non-empty string values are merged
+    /// into `cfg.channels[name]`; this avoids adding per-channel fields here.
+    #[serde(default)]
+    channel_configs: Option<HashMap<String, HashMap<String, serde_json::Value>>>,
 
     reflector_enabled: Option<bool>,
     reflector_interval_mins: Option<u64>,
@@ -457,6 +456,43 @@ struct UpdateConfigRequest {
     web_run_history_limit: Option<usize>,
     web_session_idle_ttl_seconds: Option<u64>,
 }
+
+/// Convert a serde_json::Value to a serde_yaml::Value for channel config merging.
+fn json_to_yaml_value(v: &serde_json::Value) -> serde_yaml::Value {
+    match v {
+        serde_json::Value::Null => serde_yaml::Value::Null,
+        serde_json::Value::Bool(b) => serde_yaml::Value::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                serde_yaml::Value::Number(i.into())
+            } else if let Some(u) = n.as_u64() {
+                serde_yaml::Value::Number(u.into())
+            } else if let Some(f) = n.as_f64() {
+                serde_yaml::Value::Number(serde_yaml::Number::from(f))
+            } else {
+                serde_yaml::Value::Null
+            }
+        }
+        serde_json::Value::String(s) => serde_yaml::Value::String(s.clone()),
+        serde_json::Value::Array(arr) => {
+            serde_yaml::Value::Sequence(arr.iter().map(json_to_yaml_value).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            let mut map = serde_yaml::Mapping::new();
+            for (k, v) in obj {
+                map.insert(serde_yaml::Value::String(k.clone()), json_to_yaml_value(v));
+            }
+            serde_yaml::Value::Mapping(map)
+        }
+    }
+}
+
+/// Channel secret field names to redact in API responses.
+/// Adding a new channel only requires adding an entry here.
+const CHANNEL_SECRET_FIELDS: &[(&str, &[&str])] = &[
+    ("slack", &["bot_token", "app_token"]),
+    ("feishu", &["app_secret"]),
+];
 
 fn config_path_for_save() -> Result<PathBuf, (StatusCode, String)> {
     match Config::resolve_config_path() {
@@ -487,24 +523,16 @@ fn redact_config(config: &Config) -> serde_json::Value {
         cfg.web_auth_token = Some("***".into());
     }
 
-    // Redact secrets in channels map (slack bot_token/app_token, feishu app_secret)
-    if let Some(slack) = cfg.channels.get_mut("slack") {
-        if let Some(map) = slack.as_mapping_mut() {
-            let bt_key = serde_yaml::Value::String("bot_token".into());
-            if map.contains_key(&bt_key) {
-                map.insert(bt_key, serde_yaml::Value::String("***".into()));
-            }
-            let at_key = serde_yaml::Value::String("app_token".into());
-            if map.contains_key(&at_key) {
-                map.insert(at_key, serde_yaml::Value::String("***".into()));
-            }
-        }
-    }
-    if let Some(feishu) = cfg.channels.get_mut("feishu") {
-        if let Some(map) = feishu.as_mapping_mut() {
-            let key = serde_yaml::Value::String("app_secret".into());
-            if map.contains_key(&key) {
-                map.insert(key, serde_yaml::Value::String("***".into()));
+    // Redact secrets in channels map using declarative list
+    for (channel_name, secret_fields) in CHANNEL_SECRET_FIELDS {
+        if let Some(channel_val) = cfg.channels.get_mut(*channel_name) {
+            if let Some(map) = channel_val.as_mapping_mut() {
+                for field in *secret_fields {
+                    let key = serde_yaml::Value::String((*field).to_string());
+                    if map.contains_key(&key) {
+                        map.insert(key, serde_yaml::Value::String("***".into()));
+                    }
+                }
             }
         }
     }
@@ -610,65 +638,23 @@ async fn api_update_config(
         cfg.discord_allowed_channels = v;
     }
 
-    // Slack channel config
-    if body.slack_bot_token.is_some() || body.slack_app_token.is_some() {
-        let slack = cfg
-            .channels
-            .entry("slack".into())
-            .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
-        if let Some(map) = slack.as_mapping_mut() {
-            if let Some(v) = body.slack_bot_token {
-                if !v.trim().is_empty() {
-                    map.insert(
-                        serde_yaml::Value::String("bot_token".into()),
-                        serde_yaml::Value::String(v),
-                    );
-                }
-            }
-            if let Some(v) = body.slack_app_token {
-                if !v.trim().is_empty() {
-                    map.insert(
-                        serde_yaml::Value::String("app_token".into()),
-                        serde_yaml::Value::String(v),
-                    );
-                }
-            }
-        }
-    }
-
-    // Feishu channel config
-    if body.feishu_app_id.is_some()
-        || body.feishu_app_secret.is_some()
-        || body.feishu_domain.is_some()
-    {
-        let feishu = cfg
-            .channels
-            .entry("feishu".into())
-            .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
-        if let Some(map) = feishu.as_mapping_mut() {
-            if let Some(v) = body.feishu_app_id {
-                if !v.trim().is_empty() {
-                    map.insert(
-                        serde_yaml::Value::String("app_id".into()),
-                        serde_yaml::Value::String(v),
-                    );
-                }
-            }
-            if let Some(v) = body.feishu_app_secret {
-                if !v.trim().is_empty() {
-                    map.insert(
-                        serde_yaml::Value::String("app_secret".into()),
-                        serde_yaml::Value::String(v),
-                    );
-                }
-            }
-            if let Some(v) = body.feishu_domain {
-                let domain = v.trim().to_string();
-                if !domain.is_empty() {
-                    map.insert(
-                        serde_yaml::Value::String("domain".into()),
-                        serde_yaml::Value::String(domain),
-                    );
+    // Generic channel config merge — handles any channel (slack, feishu, future ones)
+    if let Some(channel_configs) = body.channel_configs {
+        for (channel_name, fields) in channel_configs {
+            let entry = cfg
+                .channels
+                .entry(channel_name)
+                .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
+            if let Some(map) = entry.as_mapping_mut() {
+                for (field_key, json_val) in fields {
+                    // Skip empty strings (treated as "no change")
+                    if let Some(s) = json_val.as_str() {
+                        if s.trim().is_empty() {
+                            continue;
+                        }
+                    }
+                    let yaml_val = json_to_yaml_value(&json_val);
+                    map.insert(serde_yaml::Value::String(field_key), yaml_val);
                 }
             }
         }
@@ -1362,11 +1348,15 @@ async fn send_and_store_response_with_events(
         .to_string();
 
     if let Some(explicit_chat_id) = parsed_chat_id {
-        let is_web = get_chat_routing(&state.app_state.channel_registry, state.app_state.db.clone(), explicit_chat_id)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
-            .map(|r| r.channel_name == "web")
-            .unwrap_or(false);
+        let is_web = get_chat_routing(
+            &state.app_state.channel_registry,
+            state.app_state.db.clone(),
+            explicit_chat_id,
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .map(|r| r.channel_name == "web")
+        .unwrap_or(false);
         if !is_web {
             return Err((
                 StatusCode::BAD_REQUEST,
@@ -1446,11 +1436,15 @@ async fn api_reset(
     let session_key = normalize_session_key(body.session_key.as_deref());
     let chat_id = resolve_chat_id_for_session_key(&state, &session_key).await?;
 
-    let is_web = get_chat_routing(&state.app_state.channel_registry, state.app_state.db.clone(), chat_id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
-        .map(|r| r.channel_name == "web")
-        .unwrap_or(false);
+    let is_web = get_chat_routing(
+        &state.app_state.channel_registry,
+        state.app_state.db.clone(),
+        chat_id,
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+    .map(|r| r.channel_name == "web")
+    .unwrap_or(false);
 
     let deleted = if is_web {
         let deleted = call_blocking(state.app_state.db.clone(), move |db| {
@@ -1584,10 +1578,10 @@ fn build_router(web_state: WebState) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel_adapter::ChannelRegistry;
     use crate::config::{Config, WorkingDirIsolation};
     use crate::db::call_blocking;
     use crate::llm::LlmProvider;
-    use crate::channel_adapter::ChannelRegistry;
     use crate::{db::Database, memory::MemoryManager, skills::SkillManager, tools::ToolRegistry};
     use crate::{error::MicroClawError, llm_types::ResponseContentBlock};
     use axum::body::Body;

@@ -2,12 +2,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde::Deserialize;
+use serde_json::json;
 use serenity::async_trait;
 use serenity::model::channel::Message as DiscordMessage;
 use serenity::model::gateway::Ready;
 use serenity::model::id::ChannelId;
 use serenity::prelude::*;
-use serde_json::json;
 use tracing::{error, info, warn};
 
 use crate::agent_engine::archive_conversation;
@@ -55,12 +55,9 @@ impl ChannelAdapter for DiscordAdapter {
     }
 
     async fn send_text(&self, external_chat_id: &str, text: &str) -> Result<(), String> {
-        let discord_chat_id = external_chat_id.parse::<u64>().map_err(|_| {
-            format!(
-                "Invalid Discord external_chat_id '{}'",
-                external_chat_id
-            )
-        })?;
+        let discord_chat_id = external_chat_id
+            .parse::<u64>()
+            .map_err(|_| format!("Invalid Discord external_chat_id '{}'", external_chat_id))?;
 
         let url = format!("https://discord.com/api/v10/channels/{discord_chat_id}/messages");
 
@@ -69,7 +66,10 @@ impl ChannelAdapter for DiscordAdapter {
             let resp = self
                 .http_client
                 .post(&url)
-                .header(reqwest::header::AUTHORIZATION, format!("Bot {}", self.token))
+                .header(
+                    reqwest::header::AUTHORIZATION,
+                    format!("Bot {}", self.token),
+                )
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .json(&body)
                 .send()
@@ -95,12 +95,9 @@ impl ChannelAdapter for DiscordAdapter {
         file_path: &Path,
         caption: Option<&str>,
     ) -> Result<String, String> {
-        let discord_chat_id = external_chat_id.parse::<u64>().map_err(|_| {
-            format!(
-                "Invalid Discord external_chat_id '{}'",
-                external_chat_id
-            )
-        })?;
+        let discord_chat_id = external_chat_id
+            .parse::<u64>()
+            .map_err(|_| format!("Invalid Discord external_chat_id '{}'", external_chat_id))?;
 
         let filename = file_path
             .file_name()
@@ -123,7 +120,10 @@ impl ChannelAdapter for DiscordAdapter {
         let resp = self
             .http_client
             .post(url)
-            .header(reqwest::header::AUTHORIZATION, format!("Bot {}", self.token))
+            .header(
+                reqwest::header::AUTHORIZATION,
+                format!("Bot {}", self.token),
+            )
             .multipart(form)
             .send()
             .await

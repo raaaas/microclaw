@@ -45,7 +45,9 @@ pub async fn get_chat_routing(
     chat_id: i64,
 ) -> Result<Option<ChatRouting>, String> {
     let chat_type = get_chat_type_raw(db, chat_id).await?;
-    Ok(chat_type.as_deref().and_then(|ct| parse_chat_routing(registry, ct)))
+    Ok(chat_type
+        .as_deref()
+        .and_then(|ct| parse_chat_routing(registry, ct)))
 }
 
 pub async fn get_required_chat_routing(
@@ -80,11 +82,7 @@ pub fn session_source_for_chat(
     chat_type.to_string()
 }
 
-pub async fn is_web_chat(
-    registry: &ChannelRegistry,
-    db: Arc<Database>,
-    chat_id: i64,
-) -> bool {
+pub async fn is_web_chat(registry: &ChannelRegistry, db: Arc<Database>, chat_id: i64) -> bool {
     get_chat_routing(registry, db, chat_id)
         .await
         .ok()

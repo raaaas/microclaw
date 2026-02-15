@@ -34,13 +34,11 @@ pub trait ChannelAdapter: Send + Sync {
         _file_path: &Path,
         _caption: Option<&str>,
     ) -> Result<String, String> {
-        Err(format!(
-            "attachments not supported for {}",
-            self.name()
-        ))
+        Err(format!("attachments not supported for {}", self.name()))
     }
 }
 
+#[derive(Default)]
 pub struct ChannelRegistry {
     adapters: HashMap<String, Arc<dyn ChannelAdapter>>,
     /// "slack_dm" -> "slack", "telegram_private" -> "telegram", etc.
@@ -51,11 +49,7 @@ pub struct ChannelRegistry {
 
 impl ChannelRegistry {
     pub fn new() -> Self {
-        ChannelRegistry {
-            adapters: HashMap::new(),
-            type_to_channel: HashMap::new(),
-            type_to_conversation: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub fn register(&mut self, adapter: Arc<dyn ChannelAdapter>) {
@@ -85,10 +79,7 @@ impl ChannelRegistry {
     }
 
     /// Resolve only the channel name and conversation kind (without needing the adapter).
-    pub fn resolve_routing(
-        &self,
-        db_chat_type: &str,
-    ) -> Option<(&str, ConversationKind)> {
+    pub fn resolve_routing(&self, db_chat_type: &str) -> Option<(&str, ConversationKind)> {
         let channel_name = self.type_to_channel.get(db_chat_type)?;
         let kind = self.type_to_conversation.get(db_chat_type)?;
         Some((channel_name.as_str(), *kind))

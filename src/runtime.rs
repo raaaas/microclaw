@@ -64,14 +64,18 @@ pub async fn run(
         }
     }
 
-    if let Some(dc_cfg) = config.channel_config::<crate::channels::discord::DiscordChannelConfig>("discord") {
+    if let Some(dc_cfg) =
+        config.channel_config::<crate::channels::discord::DiscordChannelConfig>("discord")
+    {
         if !dc_cfg.bot_token.trim().is_empty() {
             discord_token = Some(dc_cfg.bot_token.clone());
             registry.register(Arc::new(DiscordAdapter::new(dc_cfg.bot_token)));
         }
     }
 
-    if let Some(slack_cfg) = config.channel_config::<crate::channels::slack::SlackChannelConfig>("slack") {
+    if let Some(slack_cfg) =
+        config.channel_config::<crate::channels::slack::SlackChannelConfig>("slack")
+    {
         if !slack_cfg.bot_token.trim().is_empty() && !slack_cfg.app_token.trim().is_empty() {
             has_slack = true;
             registry.register(Arc::new(SlackAdapter::new(slack_cfg.bot_token)));
@@ -79,7 +83,9 @@ pub async fn run(
     }
 
     let mut has_feishu = false;
-    if let Some(feishu_cfg) = config.channel_config::<crate::channels::feishu::FeishuChannelConfig>("feishu") {
+    if let Some(feishu_cfg) =
+        config.channel_config::<crate::channels::feishu::FeishuChannelConfig>("feishu")
+    {
         if !feishu_cfg.app_id.trim().is_empty() && !feishu_cfg.app_secret.trim().is_empty() {
             has_feishu = true;
             registry.register(Arc::new(FeishuAdapter::new(

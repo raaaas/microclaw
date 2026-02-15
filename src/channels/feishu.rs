@@ -18,6 +18,17 @@ use crate::db::call_blocking;
 use crate::db::StoredMessage;
 use crate::llm_types::Message as LlmMessage;
 use crate::runtime::AppState;
+
+type WsSink = Arc<
+    tokio::sync::Mutex<
+        futures_util::stream::SplitSink<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+            WsMessage,
+        >,
+    >,
+>;
 use crate::text::split_text;
 use crate::usage::build_usage_report;
 
@@ -182,10 +193,7 @@ impl ChannelAdapter for FeishuAdapter {
             let resp = self
                 .http_client
                 .post(&url)
-                .header(
-                    reqwest::header::AUTHORIZATION,
-                    format!("Bearer {token}"),
-                )
+                .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .json(&body)
                 .send()
@@ -229,7 +237,10 @@ impl ChannelAdapter for FeishuAdapter {
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
-        let is_image = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp");
+        let is_image = matches!(
+            ext.as_str(),
+            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp"
+        );
 
         if is_image {
             // Upload image
@@ -243,10 +254,7 @@ impl ChannelAdapter for FeishuAdapter {
             let resp = self
                 .http_client
                 .post(&upload_url)
-                .header(
-                    reqwest::header::AUTHORIZATION,
-                    format!("Bearer {token}"),
-                )
+                .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
                 .multipart(form)
                 .send()
                 .await
@@ -282,10 +290,7 @@ impl ChannelAdapter for FeishuAdapter {
             let resp = self
                 .http_client
                 .post(&send_url)
-                .header(
-                    reqwest::header::AUTHORIZATION,
-                    format!("Bearer {token}"),
-                )
+                .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
                 .json(&body)
                 .send()
                 .await
@@ -317,10 +322,7 @@ impl ChannelAdapter for FeishuAdapter {
             let resp = self
                 .http_client
                 .post(&upload_url)
-                .header(
-                    reqwest::header::AUTHORIZATION,
-                    format!("Bearer {token}"),
-                )
+                .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
                 .multipart(form)
                 .send()
                 .await
@@ -356,10 +358,7 @@ impl ChannelAdapter for FeishuAdapter {
             let resp = self
                 .http_client
                 .post(&send_url)
-                .header(
-                    reqwest::header::AUTHORIZATION,
-                    format!("Bearer {token}"),
-                )
+                .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
                 .json(&body)
                 .send()
                 .await
@@ -601,13 +600,11 @@ mod pb {
                     }
                     (6, 2) => {
                         let b = decode_bytes(data, &mut pos)?;
-                        frame.payload_encoding =
-                            String::from_utf8_lossy(b).into_owned();
+                        frame.payload_encoding = String::from_utf8_lossy(b).into_owned();
                     }
                     (7, 2) => {
                         let b = decode_bytes(data, &mut pos)?;
-                        frame.payload_type =
-                            String::from_utf8_lossy(b).into_owned();
+                        frame.payload_type = String::from_utf8_lossy(b).into_owned();
                     }
                     (8, 2) => {
                         let b = decode_bytes(data, &mut pos)?;
@@ -615,8 +612,7 @@ mod pb {
                     }
                     (9, 2) => {
                         let b = decode_bytes(data, &mut pos)?;
-                        frame.log_id_new =
-                            String::from_utf8_lossy(b).into_owned();
+                        frame.log_id_new = String::from_utf8_lossy(b).into_owned();
                     }
                     (_, 0) => {
                         decode_varint(data, &mut pos)?;
@@ -639,9 +635,7 @@ mod pb {
                         pos += 8;
                     }
                     _ => {
-                        return Err(format!(
-                            "unexpected wire type {wire} for field {field}"
-                        ));
+                        return Err(format!("unexpected wire type {wire} for field {field}"));
                     }
                 }
             }
@@ -720,7 +714,8 @@ fn parse_message_content(content: &str, message_type: &str) -> String {
                 // Post content has locale keys (zh_cn, en_us, etc.) with title + content array
                 let mut texts = Vec::new();
                 if let Some(obj) = v.as_object() {
-                    for (_lang, post) in obj {
+                    // Use first locale only
+                    if let Some((_lang, post)) = obj.iter().next() {
                         if let Some(title) = post.get("title").and_then(|t| t.as_str()) {
                             if !title.is_empty() {
                                 texts.push(title.to_string());
@@ -739,7 +734,6 @@ fn parse_message_content(content: &str, message_type: &str) -> String {
                                 }
                             }
                         }
-                        break; // Use first locale only
                     }
                 }
                 if texts.is_empty() {
@@ -933,7 +927,10 @@ pub async fn start_feishu_bot(app_state: Arc<AppState>) {
     };
 
     if feishu_cfg.connection_mode == "webhook" {
-        info!("Feishu: webhook mode — waiting for events on {}", feishu_cfg.webhook_path);
+        info!(
+            "Feishu: webhook mode — waiting for events on {}",
+            feishu_cfg.webhook_path
+        );
         // In webhook mode the web server handles events; we just keep running.
         // The webhook route is registered separately via register_feishu_webhook().
         // Park this task forever.
@@ -967,8 +964,13 @@ async fn run_ws_connection(
     http_client: &reqwest::Client,
     bot_open_id: &str,
 ) -> Result<(), String> {
-    let (ws_url, ping_interval) =
-        get_ws_endpoint(http_client, base_url, &feishu_cfg.app_id, &feishu_cfg.app_secret).await?;
+    let (ws_url, ping_interval) = get_ws_endpoint(
+        http_client,
+        base_url,
+        &feishu_cfg.app_id,
+        &feishu_cfg.app_secret,
+    )
+    .await?;
 
     let service_id = extract_service_id(&ws_url);
     let ping_secs = ping_interval.unwrap_or(120);
@@ -1005,7 +1007,7 @@ async fn run_ws_connection(
             };
             let data = ping_frame.encode();
             let mut w = ping_write.lock().await;
-            if let Err(e) = w.send(WsMessage::Binary(data.into())).await {
+            if let Err(e) = w.send(WsMessage::Binary(data)).await {
                 warn!("Feishu WS: ping send failed: {e}");
                 break;
             }
@@ -1079,23 +1081,21 @@ async fn run_ws_connection(
     Err("WebSocket stream ended".to_string())
 }
 
-async fn send_ack(
-    write: &Arc<tokio::sync::Mutex<futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-        WsMessage,
-    >>>,
-    request_frame: &pb::Frame,
-) {
+async fn send_ack(write: &WsSink, request_frame: &pb::Frame) {
     let resp_payload = serde_json::json!({ "StatusCode": 0 }).to_string();
     let ack_frame = pb::Frame {
         seq_id: request_frame.seq_id,
         log_id: request_frame.log_id,
         service: request_frame.service,
         method: request_frame.method,
-        headers: request_frame.headers.iter().map(|h| pb::Header {
-            key: h.key.clone(),
-            value: h.value.clone(),
-        }).collect(),
+        headers: request_frame
+            .headers
+            .iter()
+            .map(|h| pb::Header {
+                key: h.key.clone(),
+                value: h.value.clone(),
+            })
+            .collect(),
         payload_encoding: String::new(),
         payload_type: String::new(),
         payload: resp_payload.into_bytes(),
@@ -1103,7 +1103,7 @@ async fn send_ack(
     };
     let data = ack_frame.encode();
     let mut w = write.lock().await;
-    if let Err(e) = w.send(WsMessage::Binary(data.into())).await {
+    if let Err(e) = w.send(WsMessage::Binary(data)).await {
         warn!("Feishu WS: failed to send ACK: {e}");
     }
 }
@@ -1196,10 +1196,7 @@ async fn handle_feishu_event(
 
     // Check allowed_chats filter
     if !feishu_cfg.allowed_chats.is_empty()
-        && !feishu_cfg
-            .allowed_chats
-            .iter()
-            .any(|c| c == chat_id_str)
+        && !feishu_cfg.allowed_chats.iter().any(|c| c == chat_id_str)
     {
         return;
     }
@@ -1235,6 +1232,7 @@ async fn handle_feishu_event(
     .await;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_feishu_message(
     app_state: Arc<AppState>,
     feishu_cfg: &FeishuChannelConfig,
@@ -1314,16 +1312,13 @@ async fn handle_feishu_message(
     }
     if trimmed == "/skills" {
         let formatted = app_state.skills.list_skills_formatted();
-        let _ =
-            send_feishu_response(&http_client, base_url, &token, external_chat_id, &formatted)
-                .await;
+        let _ = send_feishu_response(&http_client, base_url, &token, external_chat_id, &formatted)
+            .await;
         return;
     }
     if trimmed == "/archive" {
-        if let Ok(Some((json, _))) = call_blocking(app_state.db.clone(), move |db| {
-            db.load_session(chat_id)
-        })
-        .await
+        if let Ok(Some((json, _))) =
+            call_blocking(app_state.db.clone(), move |db| db.load_session(chat_id)).await
         {
             let messages: Vec<LlmMessage> = serde_json::from_str(&json).unwrap_or_default();
             if messages.is_empty() {
@@ -1336,12 +1331,7 @@ async fn handle_feishu_message(
                 )
                 .await;
             } else {
-                archive_conversation(
-                    &app_state.config.data_dir,
-                    "feishu",
-                    chat_id,
-                    &messages,
-                );
+                archive_conversation(&app_state.config.data_dir, "feishu", chat_id, &messages);
                 let _ = send_feishu_response(
                     &http_client,
                     base_url,
@@ -1366,14 +1356,9 @@ async fn handle_feishu_message(
     if trimmed == "/usage" {
         match build_usage_report(app_state.db.clone(), &app_state.config, chat_id).await {
             Ok(report) => {
-                let _ = send_feishu_response(
-                    &http_client,
-                    base_url,
-                    &token,
-                    external_chat_id,
-                    &report,
-                )
-                .await;
+                let _ =
+                    send_feishu_response(&http_client, base_url, &token, external_chat_id, &report)
+                        .await;
             }
             Err(e) => {
                 let _ = send_feishu_response(
@@ -1449,10 +1434,8 @@ async fn handle_feishu_message(
                     is_from_bot: true,
                     timestamp: chrono::Utc::now().to_rfc3339(),
                 };
-                let _ = call_blocking(app_state.db.clone(), move |db| {
-                    db.store_message(&bot_msg)
-                })
-                .await;
+                let _ =
+                    call_blocking(app_state.db.clone(), move |db| db.store_message(&bot_msg)).await;
             } else if !used_send_message_tool {
                 let fallback =
                     "I couldn't produce a visible reply after an automatic retry. Please try again.";
@@ -1473,10 +1456,8 @@ async fn handle_feishu_message(
                     is_from_bot: true,
                     timestamp: chrono::Utc::now().to_rfc3339(),
                 };
-                let _ = call_blocking(app_state.db.clone(), move |db| {
-                    db.store_message(&bot_msg)
-                })
-                .await;
+                let _ =
+                    call_blocking(app_state.db.clone(), move |db| db.store_message(&bot_msg)).await;
             }
         }
         Err(e) => {
@@ -1499,10 +1480,7 @@ async fn handle_feishu_message(
 
 /// Register Feishu webhook routes on the given axum Router.
 /// Called when connection_mode is "webhook".
-pub fn register_feishu_webhook(
-    router: axum::Router,
-    app_state: Arc<AppState>,
-) -> axum::Router {
+pub fn register_feishu_webhook(router: axum::Router, app_state: Arc<AppState>) -> axum::Router {
     let feishu_cfg: FeishuChannelConfig = match app_state.config.channel_config("feishu") {
         Some(c) => c,
         None => return router,
@@ -1528,10 +1506,7 @@ pub fn register_feishu_webhook(
                     // Optionally verify token
                     if let Some(ref expected) = vtoken {
                         if !expected.is_empty() {
-                            let token = body
-                                .get("token")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
+                            let token = body.get("token").and_then(|v| v.as_str()).unwrap_or("");
                             if token != expected {
                                 return axum::Json(serde_json::json!({"error": "invalid token"}));
                             }
@@ -1542,31 +1517,16 @@ pub fn register_feishu_webhook(
 
                 // Resolve bot_open_id (we need it for mention detection)
                 let http_client = reqwest::Client::new();
-                let bot_open_id = match get_token(
-                    &http_client,
-                    &base,
-                    &cfg.app_id,
-                    &cfg.app_secret,
-                )
-                .await
-                .and_then(|token| {
-                    // We can't easily call async in this chain, so we'll
-                    // store it. For webhook mode, pass empty and skip mention check.
-                    Ok(token)
-                }) {
-                    Ok(_token) => String::new(), // Will be resolved below
-                    Err(_) => String::new(),
-                };
+                let bot_open_id =
+                    match get_token(&http_client, &base, &cfg.app_id, &cfg.app_secret).await {
+                        Ok(_token) => String::new(), // Will be resolved below
+                        Err(_) => String::new(),
+                    };
 
                 // Try to resolve bot open_id for proper mention detection
                 let bot_id = if bot_open_id.is_empty() {
-                    if let Ok(token) = get_token(
-                        &http_client,
-                        &base,
-                        &cfg.app_id,
-                        &cfg.app_secret,
-                    )
-                    .await
+                    if let Ok(token) =
+                        get_token(&http_client, &base, &cfg.app_id, &cfg.app_secret).await
                     {
                         resolve_bot_open_id(&http_client, &base, &token)
                             .await

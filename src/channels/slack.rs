@@ -114,10 +114,7 @@ impl ChannelAdapter for SlackAdapter {
 
         let form = reqwest::multipart::Form::new()
             .text("channels", external_chat_id.to_string())
-            .text(
-                "initial_comment",
-                caption.unwrap_or_default().to_string(),
-            )
+            .text("initial_comment", caption.unwrap_or_default().to_string())
             .part(
                 "file",
                 reqwest::multipart::Part::bytes(bytes).file_name(filename),
@@ -164,7 +161,10 @@ async fn open_socket_mode_connection(app_token: &str) -> Result<String, String> 
             reqwest::header::AUTHORIZATION,
             format!("Bearer {app_token}"),
         )
-        .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
         .send()
         .await
         .map_err(|e| format!("Failed to call apps.connections.open: {e}"))?;
@@ -197,7 +197,10 @@ async fn resolve_bot_user_id(bot_token: &str) -> Result<String, String> {
             reqwest::header::AUTHORIZATION,
             format!("Bearer {bot_token}"),
         )
-        .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
         .send()
         .await
         .map_err(|e| format!("auth.test failed: {e}"))?;
@@ -260,7 +263,6 @@ async fn send_slack_response(bot_token: &str, channel: &str, text: &str) -> Resu
     Ok(())
 }
 
-
 /// Start the Slack bot using Socket Mode.
 pub async fn start_slack_bot(app_state: Arc<AppState>) {
     let slack_cfg: SlackChannelConfig = match app_state.config.channel_config("slack") {
@@ -285,13 +287,8 @@ pub async fn start_slack_bot(app_state: Arc<AppState>) {
     };
 
     loop {
-        if let Err(e) = run_socket_mode(
-            app_state.clone(),
-            &app_token,
-            &bot_token,
-            &bot_user_id,
-        )
-        .await
+        if let Err(e) =
+            run_socket_mode(app_state.clone(), &app_token, &bot_token, &bot_user_id).await
         {
             warn!("Slack Socket Mode disconnected: {e}");
         }
@@ -338,18 +335,12 @@ async fn run_socket_mode(
                 // Acknowledge the envelope immediately
                 if let Some(envelope_id) = envelope.get("envelope_id").and_then(|v| v.as_str()) {
                     let ack = serde_json::json!({ "envelope_id": envelope_id });
-                    if let Err(e) = write
-                        .send(WsMessage::Text(ack.to_string().into()))
-                        .await
-                    {
+                    if let Err(e) = write.send(WsMessage::Text(ack.to_string())).await {
                         warn!("Slack: failed to send ack: {e}");
                     }
                 }
 
-                let envelope_type = envelope
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let envelope_type = envelope.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
                 if envelope_type == "events_api" {
                     let event_type = envelope
@@ -437,6 +428,7 @@ async fn run_socket_mode(
     Err("WebSocket stream ended".to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_slack_message(
     app_state: Arc<AppState>,
     bot_token: &str,
@@ -466,7 +458,10 @@ async fn handle_slack_message(
     }
 
     // Check allowed channels filter
-    if let Some(slack_cfg) = app_state.config.channel_config::<SlackChannelConfig>("slack") {
+    if let Some(slack_cfg) = app_state
+        .config
+        .channel_config::<SlackChannelConfig>("slack")
+    {
         if !slack_cfg.allowed_channels.is_empty()
             && !slack_cfg.allowed_channels.iter().any(|c| c == channel)
         {
@@ -496,8 +491,12 @@ async fn handle_slack_message(
             db.clear_chat_context(chat_id)
         })
         .await;
-        let _ = send_slack_response(bot_token, channel, "Context cleared (session + chat history).")
-            .await;
+        let _ = send_slack_response(
+            bot_token,
+            channel,
+            "Context cleared (session + chat history).",
+        )
+        .await;
         return;
     }
     if trimmed == "/skills" {
@@ -506,21 +505,14 @@ async fn handle_slack_message(
         return;
     }
     if trimmed == "/archive" {
-        if let Ok(Some((json, _))) = call_blocking(app_state.db.clone(), move |db| {
-            db.load_session(chat_id)
-        })
-        .await
+        if let Ok(Some((json, _))) =
+            call_blocking(app_state.db.clone(), move |db| db.load_session(chat_id)).await
         {
             let messages: Vec<LlmMessage> = serde_json::from_str(&json).unwrap_or_default();
             if messages.is_empty() {
                 let _ = send_slack_response(bot_token, channel, "No session to archive.").await;
             } else {
-                archive_conversation(
-                    &app_state.config.data_dir,
-                    "slack",
-                    chat_id,
-                    &messages,
-                );
+                archive_conversation(&app_state.config.data_dir, "slack", chat_id, &messages);
                 let _ = send_slack_response(
                     bot_token,
                     channel,
@@ -604,10 +596,8 @@ async fn handle_slack_message(
                     is_from_bot: true,
                     timestamp: chrono::Utc::now().to_rfc3339(),
                 };
-                let _ = call_blocking(app_state.db.clone(), move |db| {
-                    db.store_message(&bot_msg)
-                })
-                .await;
+                let _ =
+                    call_blocking(app_state.db.clone(), move |db| db.store_message(&bot_msg)).await;
             } else if !used_send_message_tool {
                 let fallback = "I couldn't produce a visible reply after an automatic retry. Please try again.";
                 let _ = send_slack_response(bot_token, channel, fallback).await;
@@ -620,10 +610,8 @@ async fn handle_slack_message(
                     is_from_bot: true,
                     timestamp: chrono::Utc::now().to_rfc3339(),
                 };
-                let _ = call_blocking(app_state.db.clone(), move |db| {
-                    db.store_message(&bot_msg)
-                })
-                .await;
+                let _ =
+                    call_blocking(app_state.db.clone(), move |db| db.store_message(&bot_msg)).await;
             }
         }
         Err(e) => {

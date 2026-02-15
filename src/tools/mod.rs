@@ -25,12 +25,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::{path::Path, path::PathBuf, time::Instant};
 
-use async_trait::async_trait;
-use serde_json::json;
 use crate::channel_adapter::ChannelRegistry;
 use crate::config::{Config, WorkingDirIsolation};
 use crate::db::Database;
 use crate::llm_types::ToolDefinition;
+use async_trait::async_trait;
+use serde_json::json;
 
 pub struct ToolResult {
     pub content: String,
@@ -331,11 +331,26 @@ impl ToolRegistry {
                 db.clone(),
                 config.timezone.clone(),
             )),
-            Box::new(schedule::ListTasksTool::new(channel_registry.clone(), db.clone())),
-            Box::new(schedule::PauseTaskTool::new(channel_registry.clone(), db.clone())),
-            Box::new(schedule::ResumeTaskTool::new(channel_registry.clone(), db.clone())),
-            Box::new(schedule::CancelTaskTool::new(channel_registry.clone(), db.clone())),
-            Box::new(schedule::GetTaskHistoryTool::new(channel_registry.clone(), db.clone())),
+            Box::new(schedule::ListTasksTool::new(
+                channel_registry.clone(),
+                db.clone(),
+            )),
+            Box::new(schedule::PauseTaskTool::new(
+                channel_registry.clone(),
+                db.clone(),
+            )),
+            Box::new(schedule::ResumeTaskTool::new(
+                channel_registry.clone(),
+                db.clone(),
+            )),
+            Box::new(schedule::CancelTaskTool::new(
+                channel_registry.clone(),
+                db.clone(),
+            )),
+            Box::new(schedule::GetTaskHistoryTool::new(
+                channel_registry.clone(),
+                db.clone(),
+            )),
             Box::new(export_chat::ExportChatTool::new(
                 db.clone(),
                 &config.data_dir,

@@ -32,7 +32,11 @@ pub struct ScheduleTaskTool {
 }
 
 impl ScheduleTaskTool {
-    pub fn new(registry: Arc<ChannelRegistry>, db: Arc<Database>, default_timezone: String) -> Self {
+    pub fn new(
+        registry: Arc<ChannelRegistry>,
+        db: Arc<Database>,
+        default_timezone: String,
+    ) -> Self {
         ScheduleTaskTool {
             registry,
             db,
@@ -88,7 +92,9 @@ impl Tool for ScheduleTaskTool {
         if let Err(e) = authorize_chat_access(&input, chat_id) {
             return ToolResult::error(e);
         }
-        if let Err(e) = enforce_channel_policy(&self.registry, self.db.clone(), &input, chat_id).await {
+        if let Err(e) =
+            enforce_channel_policy(&self.registry, self.db.clone(), &input, chat_id).await
+        {
             return ToolResult::error(e);
         }
         let prompt = match input.get("prompt").and_then(|v| v.as_str()) {
@@ -191,7 +197,9 @@ impl Tool for ListTasksTool {
         if let Err(e) = authorize_chat_access(&input, chat_id) {
             return ToolResult::error(e);
         }
-        if let Err(e) = enforce_channel_policy(&self.registry, self.db.clone(), &input, chat_id).await {
+        if let Err(e) =
+            enforce_channel_policy(&self.registry, self.db.clone(), &input, chat_id).await
+        {
             return ToolResult::error(e);
         }
 
@@ -263,7 +271,9 @@ impl Tool for PauseTaskTool {
         if let Err(e) = authorize_chat_access(&input, task.chat_id) {
             return ToolResult::error(e);
         }
-        if let Err(e) = enforce_channel_policy(&self.registry, self.db.clone(), &input, task.chat_id).await {
+        if let Err(e) =
+            enforce_channel_policy(&self.registry, self.db.clone(), &input, task.chat_id).await
+        {
             return ToolResult::error(e);
         }
 
@@ -328,7 +338,9 @@ impl Tool for ResumeTaskTool {
         if let Err(e) = authorize_chat_access(&input, task.chat_id) {
             return ToolResult::error(e);
         }
-        if let Err(e) = enforce_channel_policy(&self.registry, self.db.clone(), &input, task.chat_id).await {
+        if let Err(e) =
+            enforce_channel_policy(&self.registry, self.db.clone(), &input, task.chat_id).await
+        {
             return ToolResult::error(e);
         }
 
@@ -393,7 +405,9 @@ impl Tool for CancelTaskTool {
         if let Err(e) = authorize_chat_access(&input, task.chat_id) {
             return ToolResult::error(e);
         }
-        if let Err(e) = enforce_channel_policy(&self.registry, self.db.clone(), &input, task.chat_id).await {
+        if let Err(e) =
+            enforce_channel_policy(&self.registry, self.db.clone(), &input, task.chat_id).await
+        {
             return ToolResult::error(e);
         }
 
@@ -462,7 +476,9 @@ impl Tool for GetTaskHistoryTool {
         if let Err(e) = authorize_chat_access(&input, task.chat_id) {
             return ToolResult::error(e);
         }
-        if let Err(e) = enforce_channel_policy(&self.registry, self.db.clone(), &input, task.chat_id).await {
+        if let Err(e) =
+            enforce_channel_policy(&self.registry, self.db.clone(), &input, task.chat_id).await
+        {
             return ToolResult::error(e);
         }
         let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;

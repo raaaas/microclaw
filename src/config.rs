@@ -434,8 +434,8 @@ impl Config {
         }
 
         // Validate required fields
-        let has_telegram = !self.telegram_bot_token.trim().is_empty()
-            || self.channels.contains_key("telegram");
+        let has_telegram =
+            !self.telegram_bot_token.trim().is_empty() || self.channels.contains_key("telegram");
         let has_discord = self
             .discord_bot_token
             .as_deref()

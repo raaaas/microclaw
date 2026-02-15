@@ -6,7 +6,9 @@ use tracing::{error, info};
 
 use crate::agent_engine::process_with_agent;
 use crate::agent_engine::AgentRequestContext;
-use crate::channel::{deliver_and_store_bot_message, get_chat_routing, ChatRouting, ConversationKind};
+use crate::channel::{
+    deliver_and_store_bot_message, get_chat_routing, ChatRouting, ConversationKind,
+};
 use crate::db::call_blocking;
 use crate::llm_types::{Message, MessageContent, ResponseContentBlock};
 use crate::runtime::AppState;
