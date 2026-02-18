@@ -142,17 +142,18 @@ impl Tool for SubAgentTool {
                 let assistant_content: Vec<ContentBlock> = response
                     .content
                     .iter()
-                    .map(|block| match block {
+                    .filter_map(|block| match block {
                         ResponseContentBlock::Text { text } => {
-                            ContentBlock::Text { text: text.clone() }
+                            Some(ContentBlock::Text { text: text.clone() })
                         }
                         ResponseContentBlock::ToolUse { id, name, input } => {
-                            ContentBlock::ToolUse {
+                            Some(ContentBlock::ToolUse {
                                 id: id.clone(),
                                 name: name.clone(),
                                 input: input.clone(),
-                            }
+                            })
                         }
+                        ResponseContentBlock::Other => None,
                     })
                     .collect();
 
@@ -228,6 +229,7 @@ mod tests {
             llm_base_url: None,
             max_tokens: 4096,
             max_tool_iterations: 100,
+            compaction_timeout_secs: 180,
             max_history_messages: 50,
             max_document_size_mb: 100,
             memory_token_budget: 1500,
@@ -242,6 +244,7 @@ mod tests {
             compact_keep_recent: 20,
             discord_bot_token: None,
             discord_allowed_channels: vec![],
+            discord_no_mention: false,
             show_thinking: false,
             web_enabled: false,
             web_host: "127.0.0.1".into(),

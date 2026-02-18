@@ -105,6 +105,66 @@ fn migrate_legacy_runtime_layout(data_root: &Path, runtime_dir: &Path) {
     }
 }
 
+async fn reembed_memories() -> anyhow::Result<()> {
+    let config = Config::load()?;
+    let runtime_data_dir = config.runtime_data_dir();
+    let db = db::Database::new(&runtime_data_dir)?;
+
+    #[cfg(not(feature = "sqlite-vec"))]
+    {
+        eprintln!("sqlite-vec feature not enabled. Rebuild with: cargo build --release --features sqlite-vec");
+        std::process::exit(1);
+    }
+
+    #[cfg(feature = "sqlite-vec")]
+    {
+        use microclaw::embedding;
+
+        let provider = embedding::create_provider(&config);
+        let provider = match provider {
+            Some(p) => p,
+            None => {
+                eprintln!("No embedding provider configured. Check embedding_provider in config.");
+                std::process::exit(1);
+            }
+        };
+
+        let dim = provider.dimension();
+        db.prepare_vector_index(dim)?;
+        println!("Embedding provider: {} ({}D)", provider.model(), dim);
+
+        let memories = db.get_all_active_memories()?;
+        println!("Re-embedding {} active memories...", memories.len());
+
+        let mut success = 0usize;
+        let mut failed = 0usize;
+        for (i, (id, content)) in memories.iter().enumerate() {
+            match provider.embed(content).await {
+                Ok(embedding) => {
+                    if let Err(e) = db.upsert_memory_vec(*id, &embedding) {
+                        eprintln!("  [{}] DB error: {}", id, e);
+                        failed += 1;
+                    } else {
+                        let _ = db.update_memory_embedding_model(*id, provider.model());
+                        success += 1;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  [{}] Embed error: {}", id, e);
+                    failed += 1;
+                }
+            }
+            if (i + 1) % 20 == 0 {
+                println!("  Progress: {}/{} (ok={}, fail={})", i + 1, memories.len(), success, failed);
+            }
+        }
+
+        println!("Done! {} embedded, {} failed", success, failed);
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -128,6 +188,9 @@ async fn main() -> anyhow::Result<()> {
         Some("doctor") => {
             doctor::run_cli(&args[2..])?;
             return Ok(());
+        }
+        Some("reembed") => {
+            return reembed_memories().await;
         }
         Some("version" | "--version" | "-V") => {
             print_version();

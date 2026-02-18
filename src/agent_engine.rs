@@ -566,15 +566,16 @@ pub(crate) async fn process_with_agent_impl(
             let assistant_content: Vec<ContentBlock> = response
                 .content
                 .iter()
-                .map(|block| match block {
+                .filter_map(|block| match block {
                     ResponseContentBlock::Text { text } => {
-                        ContentBlock::Text { text: text.clone() }
+                        Some(ContentBlock::Text { text: text.clone() })
                     }
-                    ResponseContentBlock::ToolUse { id, name, input } => ContentBlock::ToolUse {
+                    ResponseContentBlock::ToolUse { id, name, input } => Some(ContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
                         input: input.clone(),
-                    },
+                    }),
+                    ResponseContentBlock::Other => None,
                 })
                 .collect();
 
@@ -591,11 +592,23 @@ pub(crate) async fn process_with_agent_impl(
                     }
                     info!("Executing tool: {} (iteration {})", name, iteration + 1);
                     let started = std::time::Instant::now();
-                    let result = state
+                    let mut result = state
                         .tools
                         .execute_with_auth(name, input.clone(), &tool_auth)
                         .await;
-                    if result.is_error {
+                    // Auto-retry on approval_required — the second call auto-approves
+                    if result.is_error
+                        && result.error_type.as_deref() == Some("approval_required")
+                    {
+                        info!("Auto-retrying tool '{}' after approval gate", name);
+                        result = state
+                            .tools
+                            .execute_with_auth(name, input.clone(), &tool_auth)
+                            .await;
+                    }
+                    if result.is_error
+                        && result.error_type.as_deref() != Some("approval_required")
+                    {
                         failed_tools.insert(name.clone());
                         let preview = if result.content.chars().count() > 300 {
                             let clipped = result.content.chars().take(300).collect::<String>();
@@ -990,6 +1003,7 @@ You have access to the following capabilities:
 - Understand images sent by users (they appear as image content blocks)
 - Delegate self-contained sub-tasks to a parallel agent (sub_agent)
 - Activate agent skills (activate_skill) for specialized tasks
+- Install skills from repos (sync_skills) — ALWAYS use this instead of manually writing SKILL.md files. Skills MUST go in microclaw.data/skills/, NOT runtime/skills/ or anywhere else.
 - Plan and track tasks with a todo list (todo_read, todo_write) — use this to break down complex tasks into steps, track progress, and stay organized
 
 The current chat_id is {chat_id}. Use this when calling send_message, schedule, export_chat, memory(chat scope), or todo tools.
@@ -1253,8 +1267,9 @@ async fn compact_messages(
         content: MessageContent::Text(format!("{summarize_prompt}\n\n---\n\n{summary_input}")),
     }];
 
+    let timeout_secs = state.config.compaction_timeout_secs;
     let summary = match tokio::time::timeout(
-        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(timeout_secs),
         state
             .llm
             .send_message("You are a helpful summarizer.", summarize_messages, None),
@@ -1298,7 +1313,7 @@ async fn compact_messages(
         }
         Err(_) => {
             tracing::warn!(
-                "Compaction summarization timed out after 60s, falling back to truncation"
+                "Compaction summarization timed out after {timeout_secs}s, falling back to truncation"
             );
             return recent_messages.to_vec();
         }
@@ -1445,6 +1460,7 @@ mod tests {
             llm_base_url: None,
             max_tokens: 8192,
             max_tool_iterations: 100,
+            compaction_timeout_secs: 180,
             max_history_messages: 50,
             max_document_size_mb: 100,
             memory_token_budget: 1500,
@@ -1459,6 +1475,7 @@ mod tests {
             compact_keep_recent: 20,
             discord_bot_token: None,
             discord_allowed_channels: vec![],
+            discord_no_mention: false,
             show_thinking: false,
             web_enabled: true,
             web_host: "127.0.0.1".into(),
@@ -1782,6 +1799,7 @@ mod tests {
             llm_base_url: None,
             max_tokens: 8192,
             max_tool_iterations: 100,
+            compaction_timeout_secs: 180,
             max_history_messages: 50,
             max_document_size_mb: 100,
             memory_token_budget: 1500,
@@ -1795,6 +1813,7 @@ mod tests {
             compact_keep_recent: 20,
             discord_bot_token: None,
             discord_allowed_channels: vec![],
+            discord_no_mention: false,
             show_thinking: false,
             web_enabled: false,
             web_host: "127.0.0.1".into(),
@@ -1842,6 +1861,7 @@ mod tests {
             llm_base_url: None,
             max_tokens: 8192,
             max_tool_iterations: 100,
+            compaction_timeout_secs: 180,
             max_history_messages: 50,
             max_document_size_mb: 100,
             memory_token_budget: 1500,
@@ -1855,6 +1875,7 @@ mod tests {
             compact_keep_recent: 20,
             discord_bot_token: None,
             discord_allowed_channels: vec![],
+            discord_no_mention: false,
             show_thinking: false,
             web_enabled: false,
             web_host: "127.0.0.1".into(),

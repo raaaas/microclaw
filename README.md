@@ -331,6 +331,33 @@ Example:
 }
 ```
 
+### Browser Automation with Playwright MCP
+
+To give your agent access to a real browser with your existing logins (cookies, sessions), use the [Playwright MCP](https://github.com/microsoft/playwright-mcp) server in **extension mode**:
+
+1. Install the **Playwright MCP Bridge** extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/playwright-mcp-bridge)
+2. Click the extension icon and copy the `PLAYWRIGHT_MCP_EXTENSION_TOKEN`
+3. Add to your `mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest", "--extension"],
+      "env": {
+        "PLAYWRIGHT_MCP_EXTENSION_TOKEN": "<your-token-here>"
+      }
+    }
+  }
+}
+```
+
+This connects directly to your running Chrome via the extension's `chrome.debugger` API — no `--remote-debugging-port` flag needed. Your agent gets full access to your logged-in sessions (X, Google, GitHub, etc.) without any CDP setup.
+
+> **Note:** Chrome 136+ blocks `--remote-debugging-port` on the default user data directory and DPAPI cookie encryption is path-bound on Windows, so CDP-based approaches (`--cdp-endpoint`) will not preserve logins. Extension mode is the recommended solution.
+
 Migration evaluation to official Rust SDK is tracked in `docs/mcp-sdk-evaluation.md`.
 
 Validation:

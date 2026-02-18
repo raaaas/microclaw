@@ -81,6 +81,9 @@ pub enum ResponseContentBlock {
         name: String,
         input: serde_json::Value,
     },
+    /// Catch-all for unknown block types (e.g. "thinking" from MiniMax M2.5)
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Deserialize)]

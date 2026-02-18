@@ -337,10 +337,15 @@ impl EventHandler for Handler {
 
         // Determine if we should respond
         let should_respond = if msg.guild_id.is_some() {
-            // In a guild: only respond to @mentions
-            let cache = &ctx.cache;
-            let bot_id = cache.current_user().id;
-            msg.mentions.iter().any(|u| u.id == bot_id)
+            if self.app_state.config.discord_no_mention {
+                // Respond to all messages in guild (no @mention needed)
+                true
+            } else {
+                // In a guild: only respond to @mentions
+                let cache = &ctx.cache;
+                let bot_id = cache.current_user().id;
+                msg.mentions.iter().any(|u| u.id == bot_id)
+            }
         } else {
             // DM: respond to all messages
             true

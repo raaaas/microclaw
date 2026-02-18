@@ -112,25 +112,6 @@ pub fn tool_risk(name: &str) -> ToolRisk {
     }
 }
 
-const APPROVAL_CONTEXT_KEY: &str = "__microclaw_approval";
-
-fn approval_token_from_input(input: &serde_json::Value) -> Option<String> {
-    input
-        .get(APPROVAL_CONTEXT_KEY)
-        .and_then(|v| v.get("token"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-fn issue_approval_token() -> String {
-    uuid::Uuid::new_v4()
-        .simple()
-        .to_string()
-        .chars()
-        .take(8)
-        .collect()
-}
-
 fn approval_key(auth: &ToolAuthContext, tool_name: &str) -> String {
     format!(
         "{}:{}:{}",
@@ -138,8 +119,8 @@ fn approval_key(auth: &ToolAuthContext, tool_name: &str) -> String {
     )
 }
 
-fn pending_approvals() -> &'static std::sync::Mutex<HashMap<String, String>> {
-    static PENDING: OnceLock<std::sync::Mutex<HashMap<String, String>>> = OnceLock::new();
+fn pending_approvals() -> &'static std::sync::Mutex<HashMap<String, Instant>> {
+    static PENDING: OnceLock<std::sync::Mutex<HashMap<String, Instant>>> = OnceLock::new();
     PENDING.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
@@ -462,37 +443,39 @@ impl ToolRegistry {
         auth: &ToolAuthContext,
     ) -> ToolResult {
         if requires_high_risk_approval(name, auth) {
-            let provided = approval_token_from_input(&input);
             let key = approval_key(auth, name);
             let mut pending = pending_approvals()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            match provided {
-                Some(token) => {
-                    let valid = pending.get(&key).map(|t| t == &token).unwrap_or(false);
-                    if valid {
-                        pending.remove(&key);
-                    } else {
-                        let replacement = issue_approval_token();
-                        pending.insert(key, replacement.clone());
-                        return ToolResult::error(format!(
-                            "Approval token invalid or expired for high-risk tool '{name}' (risk: {}). Re-run with __microclaw_approval.token=\"{}\".",
-                            tool_risk(name).as_str(),
-                            replacement
-                        ))
-                        .with_error_type("approval_required");
-                    }
-                }
-                None => {
-                    let token = issue_approval_token();
-                    pending.insert(key, token.clone());
+
+            if let Some(&created_at) = pending.get(&key) {
+                if created_at.elapsed().as_secs() < 120 {
+                    // Already warned within 2 minutes — auto-approve on retry
+                    tracing::warn!(
+                        tool = name,
+                        channel = auth.caller_channel.as_str(),
+                        chat_id = auth.caller_chat_id,
+                        elapsed_secs = created_at.elapsed().as_secs(),
+                        "Auto-approved high-risk tool on retry"
+                    );
+                    pending.remove(&key);
+                } else {
+                    // Expired — re-issue warning
+                    pending.insert(key, Instant::now());
                     return ToolResult::error(format!(
-                        "Approval required for high-risk tool '{name}' (risk: {}). Re-run the same tool with __microclaw_approval.token=\"{}\" to confirm.",
+                        "Approval expired for high-risk tool '{name}' (risk: {}). Re-run the same tool call to confirm.",
                         tool_risk(name).as_str(),
-                        token
                     ))
                     .with_error_type("approval_required");
                 }
+            } else {
+                // First call — store pending and warn
+                pending.insert(key, Instant::now());
+                return ToolResult::error(format!(
+                    "Approval required for high-risk tool '{name}' (risk: {}). Re-run the same tool call to confirm.",
+                    tool_risk(name).as_str(),
+                ))
+                .with_error_type("approval_required");
             }
         }
 
@@ -640,13 +623,6 @@ mod tests {
         }
     }
 
-    fn extract_token(msg: &str) -> String {
-        let marker = "__microclaw_approval.token=\"";
-        let start = msg.find(marker).unwrap() + marker.len();
-        let rest = &msg[start..];
-        rest.split('"').next().unwrap().to_string()
-    }
-
     #[test]
     fn test_tool_risk_levels() {
         assert_eq!(tool_risk("bash"), ToolRisk::High);
@@ -670,17 +646,14 @@ mod tests {
             control_chat_ids: vec![],
         };
 
+        // First call: blocked with approval_required
         let first = registry.execute_with_auth("bash", json!({}), &auth).await;
         assert!(first.is_error);
         assert_eq!(first.error_type.as_deref(), Some("approval_required"));
-        let token = extract_token(&first.content);
 
+        // Second call: auto-approved on retry (no token needed)
         let second = registry
-            .execute_with_auth(
-                "bash",
-                json!({"__microclaw_approval": {"token": token}}),
-                &auth,
-            )
+            .execute_with_auth("bash", json!({}), &auth)
             .await;
         assert!(!second.is_error);
         assert_eq!(second.content, "ok");

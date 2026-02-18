@@ -69,6 +69,26 @@ impl Tool for WriteFileTool {
             return ToolResult::error(msg);
         }
 
+        // Guard: SKILL.md files must go in the correct skills directory, not runtime/skills/ or elsewhere.
+        if resolved_path.file_name().and_then(|f| f.to_str()) == Some("SKILL.md") {
+            let skills_marker = std::path::Path::new("microclaw.data")
+                .join("skills");
+            let runtime_skills = std::path::Path::new("microclaw.data")
+                .join("runtime")
+                .join("skills");
+            let path_str = resolved_path.to_string_lossy();
+            let in_correct_dir = path_str.contains(&skills_marker.to_string_lossy().to_string());
+            let in_runtime_dir = path_str.contains(&runtime_skills.to_string_lossy().to_string());
+            if in_runtime_dir || !in_correct_dir {
+                return ToolResult::error(format!(
+                    "Wrong directory for skills! SKILL.md files MUST be written to microclaw.data/skills/<skill-name>/SKILL.md — \
+                    NOT runtime/skills/ or any other location. Use the `sync_skills` tool instead, which handles this automatically. \
+                    Attempted path: {}",
+                    resolved_path.display()
+                ));
+            }
+        }
+
         let content = match input.get("content").and_then(|v| v.as_str()) {
             Some(c) => c,
             None => return ToolResult::error("Missing 'content' parameter".into()),

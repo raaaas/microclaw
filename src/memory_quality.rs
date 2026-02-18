@@ -58,20 +58,24 @@ pub fn extract_explicit_memory_command(text: &str) -> Option<String> {
         return None;
     }
     let lower = t.to_ascii_lowercase();
-    let prefixes = [
+
+    // High-confidence prefixes that are clearly memory commands
+    let strong_prefixes = [
         "remember this:",
         "remember this ",
         "remember that ",
         "remember:",
-        "remember ",
         "memo:",
     ];
-    for p in prefixes {
+    for p in strong_prefixes {
         if let Some(raw_with_prefix) = lower.strip_prefix(p) {
             let raw = t[t.len() - raw_with_prefix.len()..].trim();
             return normalize_memory_content(raw, 180);
         }
     }
+
+    // "remember <anything>" without a strong prefix — let the model handle it.
+    // The model can call write_memory via proper tool use if it decides to save.
 
     let zh_prefixes = ["记住：", "记住:", "请记住", "记一下：", "记一下:"];
     for p in zh_prefixes {
@@ -116,14 +120,28 @@ mod tests {
 
     #[test]
     fn test_extract_explicit_memory_command() {
+        // Strong prefixes — always save
         assert_eq!(
             extract_explicit_memory_command("Remember that prod db is on 5433"),
             Some("prod db is on 5433".to_string())
         );
         assert_eq!(
+            extract_explicit_memory_command("Remember this: always use bun"),
+            Some("always use bun".to_string())
+        );
+        assert_eq!(
+            extract_explicit_memory_command("Remember: deploy on Fridays"),
+            Some("deploy on Fridays".to_string())
+        );
+        assert_eq!(
             extract_explicit_memory_command("记住：下周三发布"),
             Some("下周三发布".to_string())
         );
+        // Weak "remember " without strong prefix — NOT auto-saved (model handles via tool use)
+        assert!(extract_explicit_memory_command("Remember prod db port is 5433").is_none());
+        assert!(extract_explicit_memory_command("Remember I'm on windows").is_none());
+        assert!(extract_explicit_memory_command("Remember, we need to fix that").is_none());
+        assert!(extract_explicit_memory_command("Remember when we talked about this?").is_none());
         assert!(extract_explicit_memory_command("hello there").is_none());
     }
 
