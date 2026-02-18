@@ -17,7 +17,7 @@ ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 REPO_DIR="$ROOT_DIR"
 TAP_DIR_DEFAULT="$ROOT_DIR/../../github/homebrew-tap"
 TAP_DIR="${TAP_DIR:-$TAP_DIR_DEFAULT}"
-TAP_REPO="everettjf/homebrew-tap"
+TAP_REPO="microclaw/homebrew-tap"
 FORMULA_PATH="Formula/microclaw.rb"
 GITHUB_REPO="microclaw/microclaw"
 

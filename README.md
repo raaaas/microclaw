@@ -99,7 +99,7 @@ iwr https://microclaw.ai/uninstall.ps1 -UseBasicParsing | iex
 ### Homebrew (macOS)
 
 ```sh
-brew tap everettjf/tap
+brew tap microclaw/tap
 brew install microclaw
 ```
 
