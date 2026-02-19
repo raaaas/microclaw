@@ -3,6 +3,7 @@ pub mod builtin_skills;
 pub mod channel;
 pub mod channel_adapter;
 pub mod channels;
+pub mod clawhub;
 pub mod codex_auth;
 pub mod config;
 pub mod db;
