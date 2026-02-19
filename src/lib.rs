@@ -12,7 +12,6 @@ pub mod scheduler;
 pub mod setup;
 pub mod skills;
 pub mod tools;
-pub mod usage;
 pub mod web;
 
 pub use channels::discord;

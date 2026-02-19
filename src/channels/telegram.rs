@@ -11,7 +11,6 @@ use crate::agent_engine::{
     archive_conversation, process_with_agent_with_events, AgentEvent, AgentRequestContext,
 };
 use crate::runtime::AppState;
-use crate::usage::build_usage_report;
 use microclaw_channels::channel::ConversationKind;
 use microclaw_channels::channel_adapter::ChannelAdapter;
 use microclaw_core::llm_types::Message;
@@ -19,6 +18,7 @@ use microclaw_core::llm_types::Message;
 use microclaw_core::llm_types::{ContentBlock, ImageSource, MessageContent};
 use microclaw_core::text::floor_char_boundary;
 use microclaw_storage::db::{call_blocking, StoredMessage};
+use microclaw_storage::usage::build_usage_report;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TelegramChannelConfig {
@@ -290,7 +290,7 @@ async fn handle_message(
         })
         .await
         .unwrap_or(raw_chat_id);
-        match build_usage_report(state.db.clone(), &state.config, chat_id).await {
+        match build_usage_report(state.db.clone(), chat_id).await {
             Ok(response) => {
                 let _ = bot.send_message(msg.chat.id, response).await;
             }

@@ -20,13 +20,13 @@ use crate::agent_engine::{
 };
 use crate::config::{Config, WorkingDirIsolation};
 use crate::runtime::AppState;
-use crate::usage::build_usage_report;
 use microclaw_channels::channel::ConversationKind;
 use microclaw_channels::channel::{
     deliver_and_store_bot_message, get_chat_routing, session_source_for_chat,
 };
 use microclaw_channels::channel_adapter::{ChannelAdapter, ChannelRegistry};
 use microclaw_storage::db::{call_blocking, ChatSummary, StoredMessage};
+use microclaw_storage::usage::build_usage_report;
 
 static WEB_ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 
@@ -851,7 +851,7 @@ async fn api_usage(
 
     let session_key = normalize_session_key(query.session_key.as_deref());
     let chat_id = resolve_chat_id_for_session_key(&state, &session_key).await?;
-    let report = build_usage_report(state.app_state.db.clone(), &state.app_state.config, chat_id)
+    let report = build_usage_report(state.app_state.db.clone(), chat_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let memory_observability = call_blocking(state.app_state.db.clone(), move |db| {

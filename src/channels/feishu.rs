@@ -29,8 +29,8 @@ type WsSink = Arc<
         >,
     >,
 >;
-use crate::usage::build_usage_report;
 use microclaw_core::text::split_text;
+use microclaw_storage::usage::build_usage_report;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -1354,7 +1354,7 @@ async fn handle_feishu_message(
         return;
     }
     if trimmed == "/usage" {
-        match build_usage_report(app_state.db.clone(), &app_state.config, chat_id).await {
+        match build_usage_report(app_state.db.clone(), chat_id).await {
             Ok(report) => {
                 let _ =
                     send_feishu_response(&http_client, base_url, &token, external_chat_id, &report)
