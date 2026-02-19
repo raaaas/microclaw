@@ -279,13 +279,9 @@ async fn main() -> anyhow::Result<()> {
     let runtime_data_dir = config.runtime_data_dir();
     let skills_data_dir = config.skills_data_dir();
     let legacy_skills_dir = data_root_dir.join("skills");
-    let skills_root_dir = std::path::PathBuf::from(&skills_data_dir)
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| data_root_dir.clone());
     migrate_legacy_runtime_layout(&data_root_dir, Path::new(&runtime_data_dir));
     migrate_legacy_skills_dir(&legacy_skills_dir, Path::new(&skills_data_dir));
-    builtin_skills::ensure_builtin_skills(&skills_root_dir)?;
+    builtin_skills::ensure_builtin_skills(Path::new(&skills_data_dir))?;
 
     if std::env::var("MICROCLAW_GATEWAY").is_ok() {
         logging::init_logging(&runtime_data_dir)?;
