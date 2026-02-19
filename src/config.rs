@@ -59,18 +59,6 @@ fn default_data_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".microclaw"))
 }
 
-fn default_microclaw_home_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("MICROCLAW_HOME") {
-        let trimmed = dir.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
-    }
-    home_dir()
-        .map(|h| h.join(".microclaw"))
-        .unwrap_or_else(|| PathBuf::from(".microclaw"))
-}
-
 fn default_working_dir() -> String {
     default_data_root()
         .join("working_dir")
@@ -383,7 +371,7 @@ impl Config {
             .to_string()
     }
 
-    /// Skills directory. Priority: MICROCLAW_SKILLS_DIR env var > skills_dir config > ~/.microclaw/skills
+    /// Skills directory. Priority: MICROCLAW_SKILLS_DIR env var > skills_dir config > <data_dir>/skills
     pub fn skills_data_dir(&self) -> String {
         // 1. Check env var first
         if let Ok(explicit_dir) = std::env::var("MICROCLAW_SKILLS_DIR") {
@@ -399,26 +387,15 @@ impl Config {
                 return trimmed.to_string();
             }
         }
-        // 3. Default to ~/.microclaw/skills
-        default_microclaw_home_dir()
+        // 3. Default to <data_dir>/skills
+        self.data_root_dir()
             .join("skills")
             .to_string_lossy()
             .to_string()
     }
 
-    pub fn skills_root_dir(&self) -> PathBuf {
-        // Uses MICROCLAW_HOME env var > ~/.microclaw
-        if let Ok(dir) = std::env::var("MICROCLAW_HOME") {
-            let trimmed = dir.trim();
-            if !trimmed.is_empty() {
-                return PathBuf::from(trimmed);
-            }
-        }
-        default_microclaw_home_dir()
-    }
-
     pub fn clawhub_lockfile_path(&self) -> PathBuf {
-        self.skills_root_dir().join("clawhub.lock.json")
+        self.data_root_dir().join("clawhub.lock.json")
     }
 
     pub fn resolve_config_path() -> Result<Option<PathBuf>, MicroClawError> {
@@ -943,7 +920,7 @@ voice_transcription_command: "whisper-mlx --file {file}"
         let skills = std::path::PathBuf::from(config.skills_data_dir());
 
         assert!(runtime.ends_with(std::path::Path::new("microclaw.data").join("runtime")));
-        assert!(skills.ends_with(std::path::Path::new(".microclaw").join("skills")));
+        assert!(skills.ends_with(std::path::Path::new("microclaw.data").join("skills")));
     }
 
     #[test]
@@ -959,8 +936,11 @@ voice_transcription_command: "whisper-mlx --file {file}"
                 .join("runtime")
                 .join("runtime")
         ));
-        // Default skills dir is ~/.microclaw/skills
-        assert!(skills.ends_with(std::path::Path::new(".microclaw").join("skills")));
+        assert!(skills.ends_with(
+            std::path::Path::new("microclaw.data")
+                .join("runtime")
+                .join("skills")
+        ));
     }
 
     #[test]

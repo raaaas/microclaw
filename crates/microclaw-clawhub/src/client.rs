@@ -72,26 +72,64 @@ impl ClawHubClient {
         slug: &str,
         version: &str,
     ) -> Result<Vec<u8>, MicroClawError> {
-        // Use Convex-backed download endpoint (different from REST API)
-        // Format: https://{random}.convex.site/api/v1/download?slug={slug}&version={version}
-        // The subdomain appears to be consistent for all downloads
-        let url = format!(
-            "https://wry-manatee-359.convex.site/api/v1/download?slug={}&version={}",
-            slug, version
-        );
-        let mut req = self.client.get(&url);
-        if let Some(ref token) = self.token {
-            req = req.header("Authorization", format!("Bearer {}", token));
+        // Prefer the configured registry domain first.
+        let mut candidate_urls = vec![
+            format!(
+                "{}/api/v1/download?slug={}&version={}",
+                self.base_url, slug, version
+            ),
+            format!(
+                "{}/api/v1/skills/{}/download?version={}",
+                self.base_url, slug, version
+            ),
+        ];
+
+        // Backward-compatible fallback used by the hosted registry.
+        if self.base_url.contains("clawhub.ai") {
+            candidate_urls.push(format!(
+                "https://wry-manatee-359.convex.site/api/v1/download?slug={}&version={}",
+                slug, version
+            ));
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| MicroClawError::Config(format!("ClawHub download failed: {}", e)))?;
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| MicroClawError::Config(format!("Failed to read download: {}", e)))?;
-        Ok(bytes.to_vec())
+
+        let mut last_error: Option<MicroClawError> = None;
+        for url in candidate_urls {
+            let mut req = self.client.get(&url);
+            if let Some(ref token) = self.token {
+                req = req.header("Authorization", format!("Bearer {}", token));
+            }
+
+            let resp = match req.send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    last_error = Some(MicroClawError::Config(format!(
+                        "ClawHub download failed at {}: {}",
+                        url, e
+                    )));
+                    continue;
+                }
+            };
+
+            let resp = match resp.error_for_status() {
+                Ok(resp) => resp,
+                Err(e) => {
+                    last_error = Some(MicroClawError::Config(format!(
+                        "ClawHub download HTTP error at {}: {}",
+                        url, e
+                    )));
+                    continue;
+                }
+            };
+
+            let bytes = resp.bytes().await.map_err(|e| {
+                MicroClawError::Config(format!("Failed to read download from {}: {}", url, e))
+            })?;
+            return Ok(bytes.to_vec());
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            MicroClawError::Config("ClawHub download failed: no usable endpoint".into())
+        }))
     }
 
     /// List versions for a skill

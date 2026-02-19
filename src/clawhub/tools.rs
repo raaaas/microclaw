@@ -175,6 +175,9 @@ impl Tool for ClawHubInstallTool {
             {
                 Ok(result) => {
                     let mut msg = result.message;
+                    if !result.success {
+                        return ToolResult::error(msg);
+                    }
                     if result.requires_restart {
                         msg.push_str("\nRestart MicroClaw or run /reload-skills to activate.");
                     }

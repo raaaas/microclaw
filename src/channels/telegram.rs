@@ -735,15 +735,17 @@ pub async fn transcribe_audio(
         let cmd = command.replace("{file}", temp_file.to_str().unwrap_or(""));
 
         // Execute the command
-        let output = tokio::process::Command::new("sh")
+        let output_result = tokio::process::Command::new("sh")
             .arg("-c")
             .arg(&cmd)
             .output()
-            .await
-            .map_err(|e| format!("Failed to run transcription command: {}", e))?;
+            .await;
 
         // Clean up temp file
         let _ = tokio::fs::remove_file(&temp_file).await;
+
+        let output =
+            output_result.map_err(|e| format!("Failed to run transcription command: {}", e))?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
