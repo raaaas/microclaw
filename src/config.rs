@@ -108,6 +108,39 @@ fn default_reflector_interval_mins() -> u64 {
 fn default_soul_path() -> Option<String> {
     None
 }
+fn default_clawhub_registry() -> String {
+    "https://clawhub.ai".into()
+}
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClawHubConfig {
+    /// ClawHub registry URL
+    #[serde(default = "default_clawhub_registry", rename = "clawhub_registry")]
+    pub registry: String,
+    /// ClawHub API token (optional)
+    #[serde(default, rename = "clawhub_token")]
+    pub token: Option<String>,
+    /// Enable agent tools for ClawHub (search, install)
+    #[serde(default = "default_true", rename = "clawhub_agent_tools_enabled")]
+    pub agent_tools_enabled: bool,
+    /// Skip security warnings for ClawHub installs
+    #[serde(default, rename = "clawhub_skip_security_warnings")]
+    pub skip_security_warnings: bool,
+}
+
+impl Default for ClawHubConfig {
+    fn default() -> Self {
+        Self {
+            registry: default_clawhub_registry(),
+            token: None,
+            agent_tools_enabled: default_true(),
+            skip_security_warnings: false,
+        }
+    }
+}
 fn is_local_web_host(host: &str) -> bool {
     let h = host.trim().to_ascii_lowercase();
     h == "127.0.0.1" || h == "localhost" || h == "::1"
@@ -220,6 +253,10 @@ pub struct Config {
     #[serde(default = "default_soul_path")]
     pub soul_path: Option<String>,
 
+    // --- ClawHub ---
+    #[serde(flatten)]
+    pub clawhub: ClawHubConfig,
+
     // --- Channel registry (new dynamic config) ---
     /// Per-channel configuration. Keys are channel names (e.g. "telegram", "discord", "slack", "web").
     /// Each value is channel-specific config deserialized by the adapter.
@@ -237,6 +274,58 @@ pub struct Config {
 }
 
 impl Config {
+    #[cfg(test)]
+    pub(crate) fn test_defaults() -> Self {
+        Self {
+            telegram_bot_token: "tok".into(),
+            bot_username: "bot".into(),
+            llm_provider: "anthropic".into(),
+            api_key: "key".into(),
+            model: "claude-sonnet-4-5-20250929".into(),
+            llm_base_url: None,
+            max_tokens: 8192,
+            max_tool_iterations: 100,
+            compaction_timeout_secs: 180,
+            max_history_messages: 50,
+            max_document_size_mb: 100,
+            memory_token_budget: 1500,
+            data_dir: "./microclaw.data".into(),
+            working_dir: "./tmp".into(),
+            working_dir_isolation: WorkingDirIsolation::Chat,
+            sandbox: SandboxConfig::default(),
+            openai_api_key: None,
+            timezone: "UTC".into(),
+            allowed_groups: vec![],
+            control_chat_ids: vec![],
+            max_session_messages: 40,
+            compact_keep_recent: 20,
+            discord_bot_token: None,
+            discord_allowed_channels: vec![],
+            discord_no_mention: false,
+            show_thinking: false,
+            web_enabled: true,
+            web_host: "127.0.0.1".into(),
+            web_port: 10961,
+            web_auth_token: None,
+            web_max_inflight_per_session: 2,
+            web_max_requests_per_window: 8,
+            web_rate_window_seconds: 10,
+            web_run_history_limit: 512,
+            web_session_idle_ttl_seconds: 300,
+            model_prices: vec![],
+            embedding_provider: None,
+            embedding_api_key: None,
+            embedding_base_url: None,
+            embedding_model: None,
+            embedding_dim: None,
+            reflector_enabled: true,
+            reflector_interval_mins: 15,
+            soul_path: None,
+            clawhub: ClawHubConfig::default(),
+            channels: HashMap::new(),
+        }
+    }
+
     /// Data root directory from config.
     pub fn data_root_dir(&self) -> PathBuf {
         PathBuf::from(&self.data_dir)
@@ -596,61 +685,19 @@ mod tests {
     use super::*;
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        ENV_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .expect("env lock poisoned")
+        crate::test_support::env_lock()
+    }
+
+    #[test]
+    fn test_clawhub_config_defaults() {
+        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\n";
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.clawhub.registry, "https://clawhub.ai");
+        assert!(config.clawhub.agent_tools_enabled);
     }
 
     pub fn test_config() -> Config {
-        Config {
-            telegram_bot_token: "tok".into(),
-            bot_username: "bot".into(),
-            llm_provider: "anthropic".into(),
-            api_key: "key".into(),
-            model: "claude-sonnet-4-5-20250929".into(),
-            llm_base_url: None,
-            max_tokens: 8192,
-            max_tool_iterations: 100,
-            compaction_timeout_secs: 180,
-            max_history_messages: 50,
-            max_document_size_mb: 100,
-            memory_token_budget: 1500,
-            data_dir: "./microclaw.data".into(),
-            working_dir: "./tmp".into(),
-            working_dir_isolation: WorkingDirIsolation::Chat,
-            sandbox: SandboxConfig::default(),
-            openai_api_key: None,
-            timezone: "UTC".into(),
-            allowed_groups: vec![],
-            control_chat_ids: vec![],
-            max_session_messages: 40,
-            compact_keep_recent: 20,
-            discord_bot_token: None,
-            discord_allowed_channels: vec![],
-            discord_no_mention: false,
-            show_thinking: false,
-            web_enabled: true,
-            web_host: "127.0.0.1".into(),
-            web_port: 10961,
-            web_auth_token: None,
-            web_max_inflight_per_session: 2,
-            web_max_requests_per_window: 8,
-            web_rate_window_seconds: 10,
-            web_run_history_limit: 512,
-            web_session_idle_ttl_seconds: 300,
-            model_prices: vec![],
-            embedding_provider: None,
-            embedding_api_key: None,
-            embedding_base_url: None,
-            embedding_model: None,
-            embedding_dim: None,
-            reflector_enabled: true,
-            reflector_interval_mins: 15,
-            soul_path: None,
-            channels: HashMap::new(),
-        }
+        Config::test_defaults()
     }
 
     #[test]

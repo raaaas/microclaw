@@ -1572,55 +1572,11 @@ mod tests {
     fn test_state_with_llm(base_dir: &std::path::Path, llm: Box<dyn LlmProvider>) -> Arc<AppState> {
         let runtime_dir = base_dir.join("runtime");
         std::fs::create_dir_all(&runtime_dir).unwrap();
-        let mut cfg = Config {
-            telegram_bot_token: "tok".into(),
-            bot_username: "bot".into(),
-            llm_provider: "anthropic".into(),
-            api_key: "key".into(),
-            model: "claude-sonnet-4-5-20250929".into(),
-            llm_base_url: None,
-            max_tokens: 8192,
-            max_tool_iterations: 100,
-            compaction_timeout_secs: 180,
-            max_history_messages: 50,
-            max_document_size_mb: 100,
-            memory_token_budget: 1500,
-            data_dir: base_dir.to_string_lossy().to_string(),
-            working_dir: base_dir.join("tmp").to_string_lossy().to_string(),
-            working_dir_isolation: WorkingDirIsolation::Shared,
-            sandbox: crate::config::SandboxConfig::default(),
-            openai_api_key: None,
-            timezone: "UTC".into(),
-            allowed_groups: vec![],
-            control_chat_ids: vec![],
-            max_session_messages: 40,
-            compact_keep_recent: 20,
-            discord_bot_token: None,
-            discord_allowed_channels: vec![],
-            discord_no_mention: false,
-            show_thinking: false,
-            web_enabled: true,
-            web_host: "127.0.0.1".into(),
-            web_port: 3900,
-            web_auth_token: None,
-            web_max_inflight_per_session: 2,
-            web_max_requests_per_window: 8,
-            web_rate_window_seconds: 10,
-            web_run_history_limit: 512,
-            web_session_idle_ttl_seconds: 300,
-            model_prices: vec![],
-            embedding_provider: None,
-            embedding_api_key: None,
-            embedding_base_url: None,
-            embedding_model: None,
-            embedding_dim: None,
-            reflector_enabled: true,
-            reflector_interval_mins: 15,
-            soul_path: None,
-            channels: std::collections::HashMap::new(),
-        };
+        let mut cfg = Config::test_defaults();
         cfg.data_dir = base_dir.to_string_lossy().to_string();
         cfg.working_dir = base_dir.join("tmp").to_string_lossy().to_string();
+        cfg.working_dir_isolation = WorkingDirIsolation::Shared;
+        cfg.web_port = 3900;
         let db = Arc::new(Database::new(runtime_dir.to_str().unwrap()).unwrap());
         let mut registry = ChannelRegistry::new();
         registry.register(Arc::new(WebAdapter));
@@ -1911,53 +1867,14 @@ mod tests {
         let soul_path = base_dir.join("SOUL.md");
         std::fs::write(&soul_path, "I am a wise owl assistant.").unwrap();
 
-        let config = Config {
-            data_dir: base_dir.to_string_lossy().to_string(),
-            soul_path: None,
-            telegram_bot_token: "tok".into(),
-            bot_username: "bot".into(),
-            llm_provider: "anthropic".into(),
-            api_key: "key".into(),
-            model: "test".into(),
-            llm_base_url: None,
-            max_tokens: 8192,
-            max_tool_iterations: 100,
-            compaction_timeout_secs: 180,
-            max_history_messages: 50,
-            max_document_size_mb: 100,
-            memory_token_budget: 1500,
-            working_dir: "./tmp".into(),
-            working_dir_isolation: WorkingDirIsolation::Shared,
-            sandbox: crate::config::SandboxConfig::default(),
-            openai_api_key: None,
-            timezone: "UTC".into(),
-            allowed_groups: vec![],
-            control_chat_ids: vec![],
-            max_session_messages: 40,
-            compact_keep_recent: 20,
-            discord_bot_token: None,
-            discord_allowed_channels: vec![],
-            discord_no_mention: false,
-            show_thinking: false,
-            web_enabled: false,
-            web_host: "127.0.0.1".into(),
-            web_port: 0,
-            web_auth_token: None,
-            web_max_inflight_per_session: 2,
-            web_max_requests_per_window: 8,
-            web_rate_window_seconds: 10,
-            web_run_history_limit: 512,
-            web_session_idle_ttl_seconds: 300,
-            model_prices: vec![],
-            embedding_provider: None,
-            embedding_api_key: None,
-            embedding_base_url: None,
-            embedding_model: None,
-            embedding_dim: None,
-            reflector_enabled: true,
-            reflector_interval_mins: 15,
-            channels: std::collections::HashMap::new(),
-        };
+        let mut config = Config::test_defaults();
+        config.data_dir = base_dir.to_string_lossy().to_string();
+        config.soul_path = None;
+        config.model = "test".into();
+        config.working_dir = "./tmp".into();
+        config.working_dir_isolation = WorkingDirIsolation::Shared;
+        config.web_enabled = false;
+        config.web_port = 0;
 
         let soul = super::load_soul_content(&config, 999);
         assert!(soul.is_some());
@@ -1974,53 +1891,14 @@ mod tests {
         let soul_file = base_dir.join("custom_soul.md");
         std::fs::write(&soul_file, "I am a custom personality.").unwrap();
 
-        let config = Config {
-            data_dir: base_dir.to_string_lossy().to_string(),
-            soul_path: Some(soul_file.to_string_lossy().to_string()),
-            telegram_bot_token: "tok".into(),
-            bot_username: "bot".into(),
-            llm_provider: "anthropic".into(),
-            api_key: "key".into(),
-            model: "test".into(),
-            llm_base_url: None,
-            max_tokens: 8192,
-            max_tool_iterations: 100,
-            compaction_timeout_secs: 180,
-            max_history_messages: 50,
-            max_document_size_mb: 100,
-            memory_token_budget: 1500,
-            working_dir: "./tmp".into(),
-            working_dir_isolation: WorkingDirIsolation::Shared,
-            sandbox: crate::config::SandboxConfig::default(),
-            openai_api_key: None,
-            timezone: "UTC".into(),
-            allowed_groups: vec![],
-            control_chat_ids: vec![],
-            max_session_messages: 40,
-            compact_keep_recent: 20,
-            discord_bot_token: None,
-            discord_allowed_channels: vec![],
-            discord_no_mention: false,
-            show_thinking: false,
-            web_enabled: false,
-            web_host: "127.0.0.1".into(),
-            web_port: 0,
-            web_auth_token: None,
-            web_max_inflight_per_session: 2,
-            web_max_requests_per_window: 8,
-            web_rate_window_seconds: 10,
-            web_run_history_limit: 512,
-            web_session_idle_ttl_seconds: 300,
-            model_prices: vec![],
-            embedding_provider: None,
-            embedding_api_key: None,
-            embedding_base_url: None,
-            embedding_model: None,
-            embedding_dim: None,
-            reflector_enabled: true,
-            reflector_interval_mins: 15,
-            channels: std::collections::HashMap::new(),
-        };
+        let mut config = Config::test_defaults();
+        config.data_dir = base_dir.to_string_lossy().to_string();
+        config.soul_path = Some(soul_file.to_string_lossy().to_string());
+        config.model = "test".into();
+        config.working_dir = "./tmp".into();
+        config.working_dir_isolation = WorkingDirIsolation::Shared;
+        config.web_enabled = false;
+        config.web_port = 0;
 
         let soul = super::load_soul_content(&config, 999);
         assert!(soul.is_some());

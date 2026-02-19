@@ -363,11 +363,7 @@ mod tests {
     use super::*;
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        ENV_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .expect("env lock poisoned")
+        crate::test_support::env_lock()
     }
 
     #[test]

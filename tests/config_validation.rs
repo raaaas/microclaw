@@ -49,6 +49,7 @@ fn minimal_config() -> Config {
         reflector_enabled: true,
         reflector_interval_mins: 15,
         soul_path: None,
+        clawhub: microclaw::config::ClawHubConfig::default(),
         channels: std::collections::HashMap::new(),
     }
 }

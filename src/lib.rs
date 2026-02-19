@@ -1,5 +1,6 @@
 pub mod agent_engine;
 pub mod channels;
+pub mod clawhub;
 pub mod codex_auth;
 pub mod config;
 pub mod doctor;
@@ -30,3 +31,16 @@ pub use microclaw_storage::db;
 pub use microclaw_storage::memory;
 pub use microclaw_storage::memory_quality;
 pub use microclaw_tools::sandbox;
+
+#[cfg(test)]
+pub mod test_support {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    pub fn env_lock() -> MutexGuard<'static, ()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned")
+    }
+}

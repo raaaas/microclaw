@@ -2,6 +2,7 @@
 members = [
     ".",
     "crates/microclaw-core",
+    "crates/microclaw-clawhub",
     "crates/microclaw-storage",
     "crates/microclaw-tools",
     "crates/microclaw-channels",
@@ -21,6 +22,7 @@ sqlite-vec = ["microclaw-storage/sqlite-vec"]
 
 [dependencies]
 microclaw-core = { path = "crates/microclaw-core" }
+microclaw-clawhub = { path = "crates/microclaw-clawhub" }
 microclaw-storage = { path = "crates/microclaw-storage" }
 microclaw-tools = { path = "crates/microclaw-tools" }
 microclaw-channels = { path = "crates/microclaw-channels" }
@@ -45,6 +47,8 @@ cron = "0.13"
 urlencoding = "2"
 base64 = "0.22"
 chrono-tz = "0.10"
+zip = "2"
+sha2 = "0.10"
 axum = "0.7"
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
 crossterm = "0.28"
@@ -53,7 +57,6 @@ include_dir = "0.7"
 async-stream = "0.3"
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-sha2 = "0.10"
 argon2 = "0.5"
 opentelemetry-proto = { version = "0.28", features = ["gen-tonic-messages"] }
 prost = "0.13"

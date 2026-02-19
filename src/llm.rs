@@ -1657,15 +1657,10 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
-    use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock poisoned")
+        crate::test_support::env_lock()
     }
 
     // -----------------------------------------------------------------------
@@ -2071,106 +2066,26 @@ mod tests {
 
     #[test]
     fn test_create_provider_anthropic() {
-        let config = Config {
-            telegram_bot_token: "tok".into(),
-            bot_username: "bot".into(),
-            llm_provider: "anthropic".into(),
-            api_key: "key".into(),
-            model: "claude-sonnet-4-5-20250929".into(),
-            llm_base_url: None,
-            max_tokens: 8192,
-            max_tool_iterations: 100,
-            compaction_timeout_secs: 180,
-            max_history_messages: 50,
-            max_document_size_mb: 100,
-            memory_token_budget: 1500,
-            data_dir: "/tmp".into(),
-            working_dir: "/tmp".into(),
-            working_dir_isolation: WorkingDirIsolation::Shared,
-            sandbox: crate::config::SandboxConfig::default(),
-            openai_api_key: None,
-            timezone: "UTC".into(),
-            allowed_groups: vec![],
-            control_chat_ids: vec![],
-            max_session_messages: 40,
-            compact_keep_recent: 20,
-            discord_bot_token: None,
-            discord_allowed_channels: vec![],
-            discord_no_mention: false,
-            show_thinking: false,
-            web_enabled: false,
-            web_host: "127.0.0.1".into(),
-            web_port: 3900,
-            web_auth_token: None,
-            web_max_inflight_per_session: 2,
-            web_max_requests_per_window: 8,
-            web_rate_window_seconds: 10,
-            web_run_history_limit: 512,
-            web_session_idle_ttl_seconds: 300,
-            model_prices: vec![],
-            embedding_provider: None,
-            embedding_api_key: None,
-            embedding_base_url: None,
-            embedding_model: None,
-            embedding_dim: None,
-            reflector_enabled: true,
-            reflector_interval_mins: 15,
-            soul_path: None,
-            channels: std::collections::HashMap::new(),
-        };
+        let mut config = Config::test_defaults();
+        config.data_dir = "/tmp".into();
+        config.working_dir = "/tmp".into();
+        config.working_dir_isolation = WorkingDirIsolation::Shared;
+        config.web_enabled = false;
+        config.web_port = 3900;
         // Should not panic
         let _provider = create_provider(&config);
     }
 
     #[test]
     fn test_create_provider_openai() {
-        let config = Config {
-            telegram_bot_token: "tok".into(),
-            bot_username: "bot".into(),
-            llm_provider: "openai".into(),
-            api_key: "key".into(),
-            model: "gpt-5.2".into(),
-            llm_base_url: None,
-            max_tokens: 8192,
-            max_tool_iterations: 100,
-            compaction_timeout_secs: 180,
-            max_history_messages: 50,
-            max_document_size_mb: 100,
-            memory_token_budget: 1500,
-            data_dir: "/tmp".into(),
-            working_dir: "/tmp".into(),
-            working_dir_isolation: WorkingDirIsolation::Shared,
-            sandbox: crate::config::SandboxConfig::default(),
-            openai_api_key: None,
-            timezone: "UTC".into(),
-            allowed_groups: vec![],
-            control_chat_ids: vec![],
-            max_session_messages: 40,
-            compact_keep_recent: 20,
-            discord_bot_token: None,
-            discord_allowed_channels: vec![],
-            discord_no_mention: false,
-            show_thinking: false,
-            web_enabled: false,
-            web_host: "127.0.0.1".into(),
-            web_port: 3900,
-            web_auth_token: None,
-            web_max_inflight_per_session: 2,
-            web_max_requests_per_window: 8,
-            web_rate_window_seconds: 10,
-            web_run_history_limit: 512,
-            web_session_idle_ttl_seconds: 300,
-            model_prices: vec![],
-            embedding_provider: None,
-            embedding_api_key: None,
-            embedding_base_url: None,
-            embedding_model: None,
-            embedding_dim: None,
-            reflector_enabled: true,
-            reflector_interval_mins: 15,
-            soul_path: None,
-            channels: std::collections::HashMap::new(),
-        };
+        let mut config = Config::test_defaults();
+        config.llm_provider = "openai".into();
+        config.model = "gpt-5.2".into();
+        config.data_dir = "/tmp".into();
+        config.working_dir = "/tmp".into();
+        config.working_dir_isolation = WorkingDirIsolation::Shared;
+        config.web_enabled = false;
+        config.web_port = 3900;
         let _provider = create_provider(&config);
     }
 
@@ -2242,53 +2157,16 @@ mod tests {
             let _ = stream.flush();
         });
 
-        let config = Config {
-            telegram_bot_token: "tok".into(),
-            bot_username: "bot".into(),
-            llm_provider: "openai-codex".into(),
-            api_key: "fallback-key".into(),
-            model: "gpt-5.3-codex".into(),
-            llm_base_url: Some("http://should-be-ignored".into()),
-            max_tokens: 8192,
-            max_tool_iterations: 100,
-            compaction_timeout_secs: 180,
-            max_history_messages: 50,
-            max_document_size_mb: 100,
-            memory_token_budget: 1500,
-            data_dir: "/tmp".into(),
-            working_dir: "/tmp".into(),
-            working_dir_isolation: WorkingDirIsolation::Shared,
-            sandbox: crate::config::SandboxConfig::default(),
-            openai_api_key: None,
-            timezone: "UTC".into(),
-            allowed_groups: vec![],
-            control_chat_ids: vec![],
-            max_session_messages: 40,
-            compact_keep_recent: 20,
-            discord_bot_token: None,
-            discord_allowed_channels: vec![],
-            discord_no_mention: false,
-            show_thinking: false,
-            web_enabled: false,
-            web_host: "127.0.0.1".into(),
-            web_port: 3900,
-            web_auth_token: None,
-            web_max_inflight_per_session: 2,
-            web_max_requests_per_window: 8,
-            web_rate_window_seconds: 10,
-            web_run_history_limit: 512,
-            web_session_idle_ttl_seconds: 300,
-            model_prices: vec![],
-            embedding_provider: None,
-            embedding_api_key: None,
-            embedding_base_url: None,
-            embedding_model: None,
-            embedding_dim: None,
-            reflector_enabled: true,
-            reflector_interval_mins: 15,
-            soul_path: None,
-            channels: std::collections::HashMap::new(),
-        };
+        let mut config = Config::test_defaults();
+        config.llm_provider = "openai-codex".into();
+        config.api_key = "fallback-key".into();
+        config.model = "gpt-5.3-codex".into();
+        config.llm_base_url = Some("http://should-be-ignored".into());
+        config.data_dir = "/tmp".into();
+        config.working_dir = "/tmp".into();
+        config.working_dir_isolation = WorkingDirIsolation::Shared;
+        config.web_enabled = false;
+        config.web_port = 3900;
         let provider = OpenAiProvider::new(&config);
         let messages = vec![Message {
             role: "user".into(),
@@ -2399,53 +2277,16 @@ mod tests {
             let _ = stream.flush();
         });
 
-        let config = Config {
-            telegram_bot_token: "tok".into(),
-            bot_username: "bot".into(),
-            llm_provider: "openai-codex".into(),
-            api_key: "should-be-ignored".into(),
-            model: "gpt-5.3-codex".into(),
-            llm_base_url: Some("http://should-be-ignored".into()),
-            max_tokens: 8192,
-            max_tool_iterations: 100,
-            compaction_timeout_secs: 180,
-            max_history_messages: 50,
-            max_document_size_mb: 100,
-            memory_token_budget: 1500,
-            data_dir: "/tmp".into(),
-            working_dir: "/tmp".into(),
-            working_dir_isolation: WorkingDirIsolation::Shared,
-            sandbox: crate::config::SandboxConfig::default(),
-            openai_api_key: None,
-            timezone: "UTC".into(),
-            allowed_groups: vec![],
-            control_chat_ids: vec![],
-            max_session_messages: 40,
-            compact_keep_recent: 20,
-            discord_bot_token: None,
-            discord_allowed_channels: vec![],
-            discord_no_mention: false,
-            show_thinking: false,
-            web_enabled: false,
-            web_host: "127.0.0.1".into(),
-            web_port: 3900,
-            web_auth_token: None,
-            web_max_inflight_per_session: 2,
-            web_max_requests_per_window: 8,
-            web_rate_window_seconds: 10,
-            web_run_history_limit: 512,
-            web_session_idle_ttl_seconds: 300,
-            model_prices: vec![],
-            embedding_provider: None,
-            embedding_api_key: None,
-            embedding_base_url: None,
-            embedding_model: None,
-            embedding_dim: None,
-            reflector_enabled: true,
-            reflector_interval_mins: 15,
-            soul_path: None,
-            channels: std::collections::HashMap::new(),
-        };
+        let mut config = Config::test_defaults();
+        config.llm_provider = "openai-codex".into();
+        config.api_key = "should-be-ignored".into();
+        config.model = "gpt-5.3-codex".into();
+        config.llm_base_url = Some("http://should-be-ignored".into());
+        config.data_dir = "/tmp".into();
+        config.working_dir = "/tmp".into();
+        config.working_dir_isolation = WorkingDirIsolation::Shared;
+        config.web_enabled = false;
+        config.web_port = 3900;
         let provider = OpenAiProvider::new(&config);
         let messages = vec![Message {
             role: "user".into(),
