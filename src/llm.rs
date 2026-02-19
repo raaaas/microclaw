@@ -2072,6 +2072,10 @@ mod tests {
             reflector_enabled: true,
             reflector_interval_mins: 15,
             soul_path: None,
+            clawhub_registry: "https://clawhub.ai".into(),
+            clawhub_token: None,
+            clawhub_agent_tools_enabled: true,
+            clawhub_skip_security_warnings: false,
             channels: std::collections::HashMap::new(),
         };
         // Should not panic
@@ -2124,6 +2128,10 @@ mod tests {
             reflector_enabled: true,
             reflector_interval_mins: 15,
             soul_path: None,
+            clawhub_registry: "https://clawhub.ai".into(),
+            clawhub_token: None,
+            clawhub_agent_tools_enabled: true,
+            clawhub_skip_security_warnings: false,
             channels: std::collections::HashMap::new(),
         };
         let _provider = create_provider(&config);
@@ -2241,6 +2249,10 @@ mod tests {
             reflector_enabled: true,
             reflector_interval_mins: 15,
             soul_path: None,
+            clawhub_registry: "https://clawhub.ai".into(),
+            clawhub_token: None,
+            clawhub_agent_tools_enabled: true,
+            clawhub_skip_security_warnings: false,
             channels: std::collections::HashMap::new(),
         };
         let provider = OpenAiProvider::new(&config);
@@ -2397,6 +2409,10 @@ mod tests {
             reflector_enabled: true,
             reflector_interval_mins: 15,
             soul_path: None,
+            clawhub_registry: "https://clawhub.ai".into(),
+            clawhub_token: None,
+            clawhub_agent_tools_enabled: true,
+            clawhub_skip_security_warnings: false,
             channels: std::collections::HashMap::new(),
         };
         let provider = OpenAiProvider::new(&config);

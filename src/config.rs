@@ -100,6 +100,12 @@ fn default_reflector_interval_mins() -> u64 {
 fn default_soul_path() -> Option<String> {
     None
 }
+fn default_clawhub_registry() -> String {
+    "https://clawhub.ai".into()
+}
+fn default_true() -> bool {
+    true
+}
 fn is_local_web_host(host: &str) -> bool {
     let h = host.trim().to_ascii_lowercase();
     h == "127.0.0.1" || h == "localhost" || h == "::1"
@@ -216,6 +222,20 @@ pub struct Config {
     /// If not set, looks for SOUL.md in data_dir root, then current directory.
     #[serde(default = "default_soul_path")]
     pub soul_path: Option<String>,
+
+    // --- ClawHub ---
+    /// ClawHub registry URL
+    #[serde(default = "default_clawhub_registry")]
+    pub clawhub_registry: String,
+    /// ClawHub API token (optional)
+    #[serde(default)]
+    pub clawhub_token: Option<String>,
+    /// Enable agent tools for ClawHub (search, install)
+    #[serde(default = "default_true")]
+    pub clawhub_agent_tools_enabled: bool,
+    /// Skip security warnings for ClawHub installs
+    #[serde(default)]
+    pub clawhub_skip_security_warnings: bool,
 
     // --- Channel registry (new dynamic config) ---
     /// Per-channel configuration. Keys are channel names (e.g. "telegram", "discord", "slack", "web").
@@ -592,6 +612,14 @@ mod tests {
             .expect("env lock poisoned")
     }
 
+    #[test]
+    fn test_clawhub_config_defaults() {
+        let yaml = "telegram_bot_token: tok\nbot_username: bot\napi_key: key\n";
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.clawhub_registry, "https://clawhub.ai");
+        assert!(config.clawhub_agent_tools_enabled);
+    }
+
     pub fn test_config() -> Config {
         Config {
             telegram_bot_token: "tok".into(),
@@ -637,6 +665,10 @@ mod tests {
             reflector_enabled: true,
             reflector_interval_mins: 15,
             soul_path: None,
+            clawhub_registry: "https://clawhub.ai".into(),
+            clawhub_token: None,
+            clawhub_agent_tools_enabled: true,
+            clawhub_skip_security_warnings: false,
             channels: HashMap::new(),
         }
     }
