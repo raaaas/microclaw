@@ -34,8 +34,10 @@ Main orchestration files in `src/`:
 - `otlp.rs`: OTLP metrics exporter (HTTP/protobuf)
 - `web.rs`: Web API router, shared web state, stream APIs, config endpoints
 - `web/auth.rs`: auth handlers (session login/logout, password, API key lifecycle)
+- `web/config.rs`: config read/update + config self-check handlers
 - `web/sessions.rs`: session/history/reset/delete/fork/tree handlers
 - `web/metrics.rs`: metrics snapshot/history handlers
+- `web/stream.rs`: streaming send/status/SSE handlers
 - `scheduler.rs`: scheduled-task runner + memory reflector loop
 - `skills.rs`: skill discovery/activation
 - `mcp.rs`: MCP server/tool integration
@@ -140,6 +142,7 @@ Hook runtime supports:
 
 - metrics docs: `docs/observability/metrics.md`
 - operations runbook: `docs/operations/runbook.md`
+- PR/release checklist: `docs/releases/pr-release-checklist.md`
 - upgrade guide: `docs/releases/upgrade-guide.md`
 - regression/stability reports: `docs/reports/*.md`
 
