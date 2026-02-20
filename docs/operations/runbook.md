@@ -41,6 +41,9 @@ MCP reliability counters (snapshot/summary):
 - `mcp_bulkhead_rejections`
 - `mcp_circuit_open_rejections`
 
+These counters are also persisted to `metrics_history` and available in
+`GET /api/metrics/history`.
+
 ## Stability Gate
 
 - Run stability smoke suite locally: `scripts/ci/stability_smoke.sh`

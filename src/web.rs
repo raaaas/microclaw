@@ -481,6 +481,9 @@ async fn persist_metrics_snapshot(state: &WebState) -> Result<(), (StatusCode, S
         http_requests: snapshot.http_requests,
         tool_executions: snapshot.tool_executions,
         mcp_calls: snapshot.mcp_calls,
+        mcp_rate_limited_rejections: snapshot.mcp_rate_limited_rejections,
+        mcp_bulkhead_rejections: snapshot.mcp_bulkhead_rejections,
+        mcp_circuit_open_rejections: snapshot.mcp_circuit_open_rejections,
         active_sessions,
     };
     call_blocking(state.app_state.db.clone(), move |db| {
@@ -2126,11 +2129,12 @@ mod tests {
             .await
             .unwrap();
         let history_json: serde_json::Value = serde_json::from_slice(&history_body).unwrap();
-        assert!(history_json
+        let points = history_json
             .get("points")
             .and_then(|v| v.as_array())
             .map(|v| !v.is_empty())
-            .unwrap_or(false));
+            .unwrap_or(false);
+        assert!(points);
 
         let summary_req = Request::builder()
             .method("GET")
@@ -2160,7 +2164,27 @@ mod tests {
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0)
                 >= 0.0
-        );
+            );
+
+        let points_vec = history_json
+            .get("points")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(!points_vec.is_empty());
+        let first = &points_vec[0];
+        assert!(first
+            .get("mcp_rate_limited_rejections")
+            .and_then(|v| v.as_i64())
+            .is_some());
+        assert!(first
+            .get("mcp_bulkhead_rejections")
+            .and_then(|v| v.as_i64())
+            .is_some());
+        assert!(first
+            .get("mcp_circuit_open_rejections")
+            .and_then(|v| v.as_i64())
+            .is_some());
     }
 
     #[tokio::test]
