@@ -6,7 +6,7 @@ use tracing::info;
 use tracing::warn;
 
 use crate::channels::telegram::TelegramChannelConfig;
-use crate::channels::{DiscordAdapter, FeishuAdapter, SlackAdapter, TelegramAdapter};
+use crate::channels::{DiscordAdapter, FeishuAdapter, IrcAdapter, SlackAdapter, TelegramAdapter};
 use crate::config::Config;
 use crate::embedding::EmbeddingProvider;
 use crate::hooks::HookManager;
@@ -57,6 +57,7 @@ pub async fn run(
     let mut telegram_bot: Option<teloxide::Bot> = None;
     let mut discord_token: Option<String> = None;
     let mut has_slack = false;
+    let mut has_irc = false;
     let mut has_web = false;
 
     if config.channel_enabled("telegram") {
@@ -103,6 +104,20 @@ pub async fn run(
                     feishu_cfg.app_secret.clone(),
                     feishu_cfg.domain.clone(),
                 )));
+            }
+        }
+    }
+
+    let mut irc_adapter: Option<Arc<IrcAdapter>> = None;
+    if config.channel_enabled("irc") {
+        if let Some(irc_cfg) =
+            config.channel_config::<crate::channels::irc::IrcChannelConfig>("irc")
+        {
+            if !irc_cfg.server.trim().is_empty() && !irc_cfg.nick.trim().is_empty() {
+                has_irc = true;
+                let adapter = Arc::new(IrcAdapter::new(380));
+                registry.register(adapter.clone());
+                irc_adapter = Some(adapter);
             }
         }
     }
@@ -173,9 +188,20 @@ pub async fn run(
         });
     }
 
+    if has_irc {
+        let irc_state = state.clone();
+        let Some(irc_adapter) = irc_adapter else {
+            return Err(anyhow!("IRC adapter state is missing"));
+        };
+        info!("Starting IRC bot");
+        tokio::spawn(async move {
+            crate::channels::irc::start_irc_bot(irc_state, irc_adapter).await;
+        });
+    }
+
     if let Some(bot) = telegram_bot {
         crate::telegram::start_telegram_bot(state, bot).await
-    } else if has_web || discord_token.is_some() || has_slack || has_feishu {
+    } else if has_web || discord_token.is_some() || has_slack || has_feishu || has_irc {
         info!("Running without Telegram adapter; waiting for other channels");
         tokio::signal::ctrl_c()
             .await
@@ -183,7 +209,7 @@ pub async fn run(
         Ok(())
     } else {
         Err(anyhow!(
-            "No channel is enabled. Configure channels.<name>.enabled (or legacy channel settings) for Telegram, Discord, Slack, Feishu, or web."
+            "No channel is enabled. Configure channels.<name>.enabled (or legacy channel settings) for Telegram, Discord, Slack, Feishu, IRC, or web."
         ))
     }
 }
