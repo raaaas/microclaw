@@ -62,6 +62,9 @@ pub(super) async fn api_metrics_history(
             "http_requests": r.http_requests,
             "tool_executions": r.tool_executions,
             "mcp_calls": r.mcp_calls,
+            "mcp_rate_limited_rejections": r.mcp_rate_limited_rejections,
+            "mcp_bulkhead_rejections": r.mcp_bulkhead_rejections,
+            "mcp_circuit_open_rejections": r.mcp_circuit_open_rejections,
             "active_sessions": r.active_sessions
         })).collect::<Vec<_>>()
     })))
