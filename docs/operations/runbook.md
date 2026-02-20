@@ -58,3 +58,30 @@ When any burn alert is active:
 - freeze non-critical feature merges
 - triage and assign incident owner
 - if user-facing impact continues, prepare rollback/hotfix path per stability plan
+
+## MCP Server Guardrails
+
+- `mcp.json` supports server-level isolation controls:
+  - `max_concurrent_requests` (default `4`)
+  - `queue_wait_ms` (default `200`)
+  - `rate_limit_per_minute` (default `120`)
+
+Example:
+
+```json
+{
+  "mcpServers": {
+    "remote": {
+      "transport": "streamable_http",
+      "endpoint": "http://127.0.0.1:8080/mcp",
+      "max_concurrent_requests": 4,
+      "queue_wait_ms": 200,
+      "rate_limit_per_minute": 120
+    }
+  }
+}
+```
+
+Behavior:
+- requests are fail-fast when queue wait budget is exceeded.
+- per-server rate limit enforces a fixed 60s window budget.
