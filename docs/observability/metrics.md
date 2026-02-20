@@ -13,6 +13,9 @@
 - `llm_output_tokens`
 - `tool_executions`
 - `mcp_calls`
+- `mcp_rate_limited_rejections`
+- `mcp_bulkhead_rejections`
+- `mcp_circuit_open_rejections`
 - `active_sessions`
 
 ## Persistence
@@ -27,6 +30,10 @@ Metrics snapshots are persisted to SQLite `metrics_history` by minute bucket:
 - `tool_executions`
 - `mcp_calls`
 - `active_sessions`
+
+Note:
+- MCP rejection counters are currently snapshot-only fields from `GET /api/metrics` and
+  `GET /api/metrics/summary` (not persisted in `metrics_history` yet).
 
 Retention can be configured via:
 

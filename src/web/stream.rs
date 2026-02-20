@@ -103,6 +103,15 @@ pub(super) async fn api_send_stream(
                         bytes,
                         error_type,
                     } => {
+                        if is_error && name.starts_with("mcp") {
+                            let mut m = metrics_for_events.lock().await;
+                            match error_type.as_deref() {
+                                Some("mcp_rate_limited") => m.mcp_rate_limited_rejections += 1,
+                                Some("mcp_bulkhead_rejected") => m.mcp_bulkhead_rejections += 1,
+                                Some("mcp_circuit_open") => m.mcp_circuit_open_rejections += 1,
+                                _ => {}
+                            }
+                        }
                         run_hub
                             .publish(
                                 &run_id_for_events,
