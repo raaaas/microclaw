@@ -315,9 +315,9 @@ pub struct Config {
 }
 
 impl Config {
-    fn telegram_default_account_id(&self) -> Option<String> {
-        let telegram = self.channels.get("telegram")?;
-        let mut account_ids: Vec<String> = telegram
+    fn channel_default_account_id(&self, channel: &str) -> Option<String> {
+        let channel_cfg = self.channels.get(channel)?;
+        let mut account_ids: Vec<String> = channel_cfg
             .get("accounts")
             .and_then(|v| v.as_mapping())
             .map(|m| {
@@ -327,14 +327,14 @@ impl Config {
             })
             .unwrap_or_default();
         account_ids.sort();
-        telegram
+        channel_cfg
             .get("default_account")
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .map(ToOwned::to_owned)
             .or_else(|| {
-                if telegram
+                if channel_cfg
                     .get("accounts")
                     .and_then(|v| v.get("default"))
                     .is_some()
@@ -346,9 +346,9 @@ impl Config {
             })
     }
 
-    fn telegram_account_bot_username(&self, account_id: &str) -> Option<String> {
+    fn channel_account_bot_username(&self, channel: &str, account_id: &str) -> Option<String> {
         self.channels
-            .get("telegram")
+            .get(channel)
             .and_then(|v| v.get("accounts"))
             .and_then(|v| v.get(account_id))
             .and_then(|v| v.get("bot_username"))
@@ -370,15 +370,13 @@ impl Config {
             return v.to_string();
         }
 
-        if let Some(account_id) = channel.strip_prefix("telegram.") {
-            if let Some(v) = self.telegram_account_bot_username(account_id) {
+        if let Some((base_channel, account_id)) = channel.split_once('.') {
+            if let Some(v) = self.channel_account_bot_username(base_channel, account_id) {
                 return v;
             }
-        } else if channel == "telegram" {
-            if let Some(default_account) = self.telegram_default_account_id() {
-                if let Some(v) = self.telegram_account_bot_username(&default_account) {
-                    return v;
-                }
+        } else if let Some(default_account) = self.channel_default_account_id(channel) {
+            if let Some(v) = self.channel_account_bot_username(channel, &default_account) {
+                return v;
             }
         }
 
@@ -403,13 +401,12 @@ impl Config {
             })
             .collect();
 
-        if let Some(accounts) = self
-            .channels
-            .get("telegram")
-            .and_then(|v| v.get("accounts"))
-            .and_then(|v| v.as_mapping())
-        {
-            let default_account = self.telegram_default_account_id();
+        for (channel, channel_cfg) in &self.channels {
+            let accounts = channel_cfg.get("accounts").and_then(|v| v.as_mapping());
+            let Some(accounts) = accounts else {
+                continue;
+            };
+            let default_account = self.channel_default_account_id(channel);
             for (key, value) in accounts {
                 let Some(account_id) = key.as_str() else {
                     continue;
@@ -427,9 +424,9 @@ impl Config {
                     .map(|v| v == account_id)
                     .unwrap_or(false)
                 {
-                    overrides.insert("telegram".to_string(), username.to_string());
+                    overrides.insert(channel.clone(), username.to_string());
                 } else {
-                    overrides.insert(format!("telegram.{account_id}"), username.to_string());
+                    overrides.insert(format!("{channel}.{account_id}"), username.to_string());
                 }
             }
         }
@@ -776,6 +773,7 @@ impl Config {
                             "enabled": true,
                             "bot_token": token,
                             "allowed_channels": self.discord_allowed_channels,
+                            "no_mention": self.discord_no_mention,
                         }))
                         .unwrap(),
                     );

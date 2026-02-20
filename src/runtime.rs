@@ -5,6 +5,9 @@ use tracing::info;
 #[cfg(feature = "sqlite-vec")]
 use tracing::warn;
 
+use crate::channels::discord::{build_discord_runtime_contexts, DiscordRuntimeContext};
+use crate::channels::feishu::{build_feishu_runtime_contexts, FeishuRuntimeContext};
+use crate::channels::slack::{build_slack_runtime_contexts, SlackRuntimeContext};
 use crate::channels::telegram::{TelegramChannelConfig, TelegramRuntimeContext};
 use crate::channels::{DiscordAdapter, FeishuAdapter, SlackAdapter, TelegramAdapter};
 use crate::config::Config;
@@ -55,8 +58,9 @@ pub async fn run(
     // Build channel registry from config
     let mut registry = ChannelRegistry::new();
     let mut telegram_runtimes: Vec<(teloxide::Bot, TelegramRuntimeContext)> = Vec::new();
-    let mut discord_token: Option<String> = None;
-    let mut has_slack = false;
+    let mut discord_runtimes: Vec<(String, DiscordRuntimeContext)> = Vec::new();
+    let mut slack_runtimes: Vec<SlackRuntimeContext> = Vec::new();
+    let mut feishu_runtimes: Vec<FeishuRuntimeContext> = Vec::new();
     let mut has_web = false;
 
     if config.channel_enabled("telegram") {
@@ -100,7 +104,7 @@ pub async fn run(
                     tg_cfg.clone(),
                 )));
                 let bot_username = if account_cfg.bot_username.trim().is_empty() {
-                    config.bot_username_for_channel("telegram")
+                    config.bot_username_for_channel(&channel_name)
                 } else {
                     account_cfg.bot_username.trim().to_string()
                 };
@@ -143,40 +147,34 @@ pub async fn run(
     }
 
     if config.channel_enabled("discord") {
-        if let Some(dc_cfg) =
-            config.channel_config::<crate::channels::discord::DiscordChannelConfig>("discord")
-        {
-            if !dc_cfg.bot_token.trim().is_empty() {
-                discord_token = Some(dc_cfg.bot_token.clone());
-                registry.register(Arc::new(DiscordAdapter::new(dc_cfg.bot_token)));
-            }
+        discord_runtimes = build_discord_runtime_contexts(&config);
+        for (token, runtime_ctx) in &discord_runtimes {
+            registry.register(Arc::new(DiscordAdapter::new(
+                runtime_ctx.channel_name.clone(),
+                token.clone(),
+            )));
         }
     }
 
     if config.channel_enabled("slack") {
-        if let Some(slack_cfg) =
-            config.channel_config::<crate::channels::slack::SlackChannelConfig>("slack")
-        {
-            if !slack_cfg.bot_token.trim().is_empty() && !slack_cfg.app_token.trim().is_empty() {
-                has_slack = true;
-                registry.register(Arc::new(SlackAdapter::new(slack_cfg.bot_token)));
-            }
+        slack_runtimes = build_slack_runtime_contexts(&config);
+        for runtime_ctx in &slack_runtimes {
+            registry.register(Arc::new(SlackAdapter::new(
+                runtime_ctx.channel_name.clone(),
+                runtime_ctx.bot_token.clone(),
+            )));
         }
     }
 
-    let mut has_feishu = false;
     if config.channel_enabled("feishu") {
-        if let Some(feishu_cfg) =
-            config.channel_config::<crate::channels::feishu::FeishuChannelConfig>("feishu")
-        {
-            if !feishu_cfg.app_id.trim().is_empty() && !feishu_cfg.app_secret.trim().is_empty() {
-                has_feishu = true;
-                registry.register(Arc::new(FeishuAdapter::new(
-                    feishu_cfg.app_id.clone(),
-                    feishu_cfg.app_secret.clone(),
-                    feishu_cfg.domain.clone(),
-                )));
-            }
+        feishu_runtimes = build_feishu_runtime_contexts(&config);
+        for runtime_ctx in &feishu_runtimes {
+            registry.register(Arc::new(FeishuAdapter::new(
+                runtime_ctx.channel_name.clone(),
+                runtime_ctx.config.app_id.clone(),
+                runtime_ctx.config.app_secret.clone(),
+                runtime_ctx.config.domain.clone(),
+            )));
         }
     }
 
@@ -210,29 +208,46 @@ pub async fn run(
     crate::scheduler::spawn_scheduler(state.clone());
     crate::scheduler::spawn_reflector(state.clone());
 
-    if let Some(ref token) = discord_token {
-        let discord_state = state.clone();
-        let token = token.clone();
-        info!("Starting Discord bot");
-        tokio::spawn(async move {
-            crate::discord::start_discord_bot(discord_state, &token).await;
-        });
+    let has_discord = !discord_runtimes.is_empty();
+    if has_discord {
+        for (token, runtime_ctx) in discord_runtimes {
+            let discord_state = state.clone();
+            info!(
+                "Starting Discord bot adapter '{}' as @{}",
+                runtime_ctx.channel_name, runtime_ctx.bot_username
+            );
+            tokio::spawn(async move {
+                crate::discord::start_discord_bot(discord_state, runtime_ctx, &token).await;
+            });
+        }
     }
 
+    let has_slack = !slack_runtimes.is_empty();
     if has_slack {
-        let slack_state = state.clone();
-        info!("Starting Slack bot (Socket Mode)");
-        tokio::spawn(async move {
-            crate::channels::slack::start_slack_bot(slack_state).await;
-        });
+        for runtime_ctx in slack_runtimes {
+            let slack_state = state.clone();
+            info!(
+                "Starting Slack bot adapter '{}' as @{} (Socket Mode)",
+                runtime_ctx.channel_name, runtime_ctx.bot_username
+            );
+            tokio::spawn(async move {
+                crate::channels::slack::start_slack_bot(slack_state, runtime_ctx).await;
+            });
+        }
     }
 
+    let has_feishu = !feishu_runtimes.is_empty();
     if has_feishu {
-        let feishu_state = state.clone();
-        info!("Starting Feishu bot");
-        tokio::spawn(async move {
-            crate::channels::feishu::start_feishu_bot(feishu_state).await;
-        });
+        for runtime_ctx in feishu_runtimes {
+            let feishu_state = state.clone();
+            info!(
+                "Starting Feishu bot adapter '{}' as @{}",
+                runtime_ctx.channel_name, runtime_ctx.bot_username
+            );
+            tokio::spawn(async move {
+                crate::channels::feishu::start_feishu_bot(feishu_state, runtime_ctx).await;
+            });
+        }
     }
 
     if has_web {
@@ -260,7 +275,7 @@ pub async fn run(
         }
     }
 
-    if has_telegram || has_web || discord_token.is_some() || has_slack || has_feishu {
+    if has_telegram || has_web || has_discord || has_slack || has_feishu {
         info!("Runtime active; waiting for Ctrl-C");
         tokio::signal::ctrl_c()
             .await
