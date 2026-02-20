@@ -88,12 +88,6 @@ Sandbox-only diagnostics:
 microclaw doctor sandbox
 ```
 
-Migrate legacy single-account channel fields to account-based channel config:
-
-```sh
-microclaw doctor --migrate-channels
-```
-
 ### Uninstall (script)
 
 macOS/Linux:

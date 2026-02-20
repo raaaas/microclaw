@@ -100,28 +100,29 @@ impl DoctorReport {
 pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
     let json_output = args.iter().any(|a| a == "--json");
     let sandbox_only = args.iter().any(|a| a == "sandbox");
-    let migrate_channels = args.iter().any(|a| a == "--migrate-channels");
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Usage: microclaw doctor [sandbox] [--json] [--migrate-channels]\n\nChecks PATH, shell/runtime dependencies, browser automation prerequisites, MCP command dependencies, and sandbox readiness.\n\n--migrate-channels migrates legacy single-account channel fields to channels.<name>.default_account + channels.<name>.accounts.<id>."
+            "Usage: microclaw doctor [sandbox] [--json]\n\nChecks PATH, shell/runtime dependencies, browser automation prerequisites, MCP command dependencies, and sandbox readiness."
         );
         return Ok(());
     }
 
-    if migrate_channels {
-        let (path, changed) = migrate_channels_config()?;
-        if changed == 0 {
-            println!(
-                "Channel migration skipped: no legacy channel fields needed migration ({}).",
-                path.display()
-            );
-        } else {
-            println!(
-                "Migrated {changed} channel block(s) to account-based format in {}.",
-                path.display()
-            );
+    match migrate_channels_config() {
+        Ok(Some((path, changed))) => {
+            if changed > 0 && !json_output {
+                println!(
+                    "Applied automatic channel migration ({changed} block(s)) in {}.",
+                    path.display()
+                );
+            }
         }
-        return Ok(());
+        Ok(None) => {}
+        Err(err) => {
+            if !json_output {
+                // Non-fatal: doctor checks should still run even if migration fails.
+                eprintln!("Channel migration skipped: {err}");
+            }
+        }
     }
 
     let report = if sandbox_only {
@@ -144,16 +145,16 @@ pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn migrate_channels_config() -> anyhow::Result<(PathBuf, usize)> {
+fn migrate_channels_config() -> anyhow::Result<Option<(PathBuf, usize)>> {
     let Some(path) = Config::resolve_config_path()? else {
-        anyhow::bail!("No microclaw.config.yaml found. Run `microclaw setup` first.");
+        return Ok(None);
     };
     let mut cfg = Config::load()?;
     let changed = migrate_channels_to_accounts(&mut cfg);
     if changed > 0 {
         cfg.save_yaml(&path.to_string_lossy())?;
     }
-    Ok((path, changed))
+    Ok(Some((path, changed)))
 }
 
 fn channel_default_account_id(channel_cfg: &serde_yaml::Mapping) -> String {
@@ -1199,12 +1200,10 @@ mod tests {
             .get("allowed_channels")
             .and_then(|v| v.as_sequence())
             .is_some());
-        assert!(
-            discord_account
-                .get("no_mention")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-        );
+        assert!(discord_account
+            .get("no_mention")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false));
 
         assert!(cfg.telegram_bot_token.is_empty());
         assert!(cfg.discord_bot_token.is_none());
