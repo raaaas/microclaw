@@ -1,4 +1,4 @@
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 /// Directory components that are always blocked.
 const BLOCKED_DIRS: &[&str] = &[".ssh", ".aws", ".gnupg", ".kube"];
@@ -44,10 +44,34 @@ pub fn check_path(path: &str) -> Result<(), String> {
     }
 }
 
+/// Logically normalize a path by resolving `.` and `..` components without
+/// requiring the path to exist on the filesystem.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut parts: Vec<Component> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {} // skip "."
+            Component::ParentDir => {
+                // Pop the last Normal component if possible
+                if matches!(parts.last(), Some(Component::Normal(_))) {
+                    parts.pop();
+                } else if matches!(parts.last(), Some(Component::RootDir)) {
+                    // Already at root; `..` above root stays at root
+                } else {
+                    parts.push(component);
+                }
+            }
+            _ => parts.push(component),
+        }
+    }
+    parts.iter().collect()
+}
+
 /// Check if a file path should be blocked.
 pub fn is_blocked(path: &Path) -> bool {
-    // Try to resolve symlinks; if the file doesn't exist, use the path as-is
-    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    // Try to resolve symlinks; if the file doesn't exist, fall back to
+    // logical normalization so that `..` components are still resolved.
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| normalize_path(path));
 
     // Check against blocked absolute paths (both original and resolved)
     let original_str = path.to_string_lossy();
@@ -189,6 +213,35 @@ mod tests {
         let result = check_path("/home/user/.ssh/id_rsa");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Access denied"));
+    }
+
+    #[test]
+    fn test_blocks_traversal_via_parent_dir() {
+        // Paths using .. to reach blocked locations should still be caught
+        assert!(is_blocked(Path::new("/tmp/../etc/shadow")));
+        assert!(is_blocked(Path::new("/home/user/project/../../.ssh/id_rsa")));
+        assert!(is_blocked(Path::new("/foo/bar/../../../etc/sudoers")));
+        assert!(is_blocked(Path::new("/tmp/../home/user/.aws/credentials")));
+    }
+
+    #[test]
+    fn test_normalize_path() {
+        assert_eq!(
+            normalize_path(Path::new("/tmp/../etc/shadow")),
+            PathBuf::from("/etc/shadow")
+        );
+        assert_eq!(
+            normalize_path(Path::new("/a/b/../c")),
+            PathBuf::from("/a/c")
+        );
+        assert_eq!(
+            normalize_path(Path::new("/a/./b/./c")),
+            PathBuf::from("/a/b/c")
+        );
+        assert_eq!(
+            normalize_path(Path::new("a/b/../c")),
+            PathBuf::from("a/c")
+        );
     }
 
     #[test]
