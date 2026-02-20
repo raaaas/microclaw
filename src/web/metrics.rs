@@ -31,7 +31,40 @@ pub(super) async fn api_metrics_summary(
     headers: HeaderMap,
     State(state): State<WebState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    api_metrics(headers, State(state)).await
+    metrics_http_inc(&state).await;
+    require_scope(&state, &headers, AuthScope::Read).await?;
+    persist_metrics_snapshot(&state).await?;
+
+    let snapshot = state.metrics.lock().await.clone();
+    let active_sessions = state.request_hub.sessions.lock().await.len() as i64;
+    let mcp_rejections_total = snapshot.mcp_rate_limited_rejections
+        + snapshot.mcp_bulkhead_rejections
+        + snapshot.mcp_circuit_open_rejections;
+    let mcp_rejection_ratio = if snapshot.mcp_calls > 0 {
+        mcp_rejections_total as f64 / snapshot.mcp_calls as f64
+    } else {
+        0.0
+    };
+
+    Ok(Json(json!({
+        "ok": true,
+        "metrics": {
+            "http_requests": snapshot.http_requests,
+            "llm_completions": snapshot.llm_completions,
+            "llm_input_tokens": snapshot.llm_input_tokens,
+            "llm_output_tokens": snapshot.llm_output_tokens,
+            "tool_executions": snapshot.tool_executions,
+            "mcp_calls": snapshot.mcp_calls,
+            "mcp_rate_limited_rejections": snapshot.mcp_rate_limited_rejections,
+            "mcp_bulkhead_rejections": snapshot.mcp_bulkhead_rejections,
+            "mcp_circuit_open_rejections": snapshot.mcp_circuit_open_rejections,
+            "active_sessions": active_sessions
+        },
+        "summary": {
+            "mcp_rejections_total": mcp_rejections_total,
+            "mcp_rejection_ratio": mcp_rejection_ratio
+        }
+    })))
 }
 
 pub(super) async fn api_metrics_history(
