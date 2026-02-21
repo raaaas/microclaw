@@ -126,8 +126,16 @@ impl MatrixRuntimeContext {
         user.to_string()
     }
 
-    fn should_respond(&self, text: &str) -> bool {
+    fn should_respond(&self, text: &str, mentioned: bool) -> bool {
         if !self.mention_required {
+            return true;
+        }
+
+        if text.trim_start().starts_with('/') {
+            return true;
+        }
+
+        if mentioned {
             return true;
         }
 
@@ -262,19 +270,37 @@ impl ChannelAdapter for MatrixAdapter {
 
     async fn send_attachment(
         &self,
-        _external_chat_id: &str,
-        _file_path: &Path,
-        _caption: Option<&str>,
+        external_chat_id: &str,
+        file_path: &Path,
+        caption: Option<&str>,
     ) -> Result<String, String> {
-        Err("attachments not supported for matrix".to_string())
+        send_matrix_attachment(
+            &self.http_client,
+            &self.homeserver_url,
+            &self.access_token,
+            external_chat_id,
+            file_path,
+            caption,
+        )
+        .await
     }
 }
 
-struct MatrixIncomingMessage {
-    room_id: String,
-    sender: String,
-    event_id: String,
-    body: String,
+enum MatrixIncomingEvent {
+    Message {
+        room_id: String,
+        sender: String,
+        event_id: String,
+        body: String,
+        mentioned_bot: bool,
+    },
+    Reaction {
+        room_id: String,
+        sender: String,
+        event_id: String,
+        relates_to_event_id: String,
+        key: String,
+    },
 }
 
 pub async fn start_matrix_bot(app_state: Arc<AppState>, runtime: MatrixRuntimeContext) {
@@ -283,7 +309,7 @@ pub async fn start_matrix_bot(app_state: Arc<AppState>, runtime: MatrixRuntimeCo
 
     loop {
         match sync_matrix_messages(&runtime, since.as_deref()).await {
-            Ok((next_batch, messages)) => {
+            Ok((next_batch, events)) => {
                 since = Some(next_batch);
 
                 if !bootstrapped {
@@ -291,11 +317,46 @@ pub async fn start_matrix_bot(app_state: Arc<AppState>, runtime: MatrixRuntimeCo
                     continue;
                 }
 
-                for msg in messages {
+                for event in events {
                     let state = app_state.clone();
                     let runtime_ctx = runtime.clone();
                     tokio::spawn(async move {
-                        handle_matrix_message(state, runtime_ctx, msg).await;
+                        match event {
+                            MatrixIncomingEvent::Message {
+                                room_id,
+                                sender,
+                                event_id,
+                                body,
+                                mentioned_bot,
+                            } => {
+                                let msg = MatrixIncomingMessage {
+                                    room_id,
+                                    sender,
+                                    event_id,
+                                    body,
+                                    mentioned_bot,
+                                };
+                                handle_matrix_message(state, runtime_ctx, msg).await;
+                            }
+                            MatrixIncomingEvent::Reaction {
+                                room_id,
+                                sender,
+                                event_id,
+                                relates_to_event_id,
+                                key,
+                            } => {
+                                handle_matrix_reaction(
+                                    state,
+                                    runtime_ctx,
+                                    room_id,
+                                    sender,
+                                    event_id,
+                                    relates_to_event_id,
+                                    key,
+                                )
+                                .await;
+                            }
+                        }
                     });
                 }
             }
@@ -313,7 +374,7 @@ pub async fn start_matrix_bot(app_state: Arc<AppState>, runtime: MatrixRuntimeCo
 async fn sync_matrix_messages(
     runtime: &MatrixRuntimeContext,
     since: Option<&str>,
-) -> Result<(String, Vec<MatrixIncomingMessage>), String> {
+) -> Result<(String, Vec<MatrixIncomingEvent>), String> {
     let homeserver_url = runtime.normalized_homeserver_url();
     let url = format!("{homeserver_url}/_matrix/client/v3/sync");
 
@@ -379,10 +440,6 @@ async fn sync_matrix_messages(
         };
 
         for event in events {
-            if event.get("type").and_then(|v| v.as_str()) != Some("m.room.message") {
-                continue;
-            }
-
             let sender = event
                 .get("sender")
                 .and_then(|v| v.as_str())
@@ -392,31 +449,212 @@ async fn sync_matrix_messages(
                 continue;
             }
 
-            let body = event
-                .pointer("/content/body")
+            let event_type = event
+                .get("type")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            if body.trim().is_empty() {
-                continue;
-            }
-
+                .unwrap_or_default();
             let event_id = event
                 .get("event_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
-            incoming.push(MatrixIncomingMessage {
-                room_id: room_id.clone(),
-                sender,
-                event_id,
-                body,
-            });
+            if event_type == "m.room.message" {
+                let body = normalize_matrix_message_body(event);
+                if body.trim().is_empty() {
+                    continue;
+                }
+
+                let mentioned_bot = event
+                    .pointer("/content/m.mentions/user_ids")
+                    .and_then(|v| v.as_array())
+                    .map(|ids| {
+                        ids.iter()
+                            .filter_map(|v| v.as_str())
+                            .any(|v| v == runtime.bot_user_id)
+                    })
+                    .unwrap_or(false);
+
+                incoming.push(MatrixIncomingEvent::Message {
+                    room_id: room_id.clone(),
+                    sender,
+                    event_id,
+                    body,
+                    mentioned_bot,
+                });
+            } else if event_type == "m.reaction" {
+                let key = event
+                    .pointer("/content/m.relates_to/key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let relates_to_event_id = event
+                    .pointer("/content/m.relates_to/event_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                if key.trim().is_empty() || relates_to_event_id.trim().is_empty() {
+                    continue;
+                }
+
+                incoming.push(MatrixIncomingEvent::Reaction {
+                    room_id: room_id.clone(),
+                    sender,
+                    event_id,
+                    relates_to_event_id,
+                    key,
+                });
+            }
         }
     }
 
     Ok((next_batch, incoming))
+}
+
+fn normalize_matrix_message_body(event: &Value) -> String {
+    let msgtype = event
+        .pointer("/content/msgtype")
+        .and_then(|v| v.as_str())
+        .unwrap_or("m.text");
+
+    let body = event
+        .pointer("/content/body")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    match msgtype {
+        "m.image" | "m.file" | "m.audio" | "m.video" => {
+            let url = event
+                .pointer("/content/url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if url.is_empty() {
+                format!("[attachment:{msgtype}] {body}")
+            } else {
+                format!("[attachment:{msgtype}] {body} ({url})")
+            }
+        }
+        _ => body.to_string(),
+    }
+}
+
+fn html_escape(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn extract_matrix_user_ids(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw in text.split_whitespace() {
+        let trimmed = raw
+            .trim_matches(|c: char| {
+                matches!(
+                    c,
+                    ',' | '.'
+                        | ';'
+                        | ':'
+                        | '!'
+                        | '?'
+                        | ')'
+                        | '('
+                        | '['
+                        | ']'
+                        | '{'
+                        | '}'
+                        | '"'
+                        | '\''
+                )
+            })
+            .trim();
+
+        if !trimmed.starts_with('@') || !trimmed.contains(':') {
+            continue;
+        }
+
+        if trimmed.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '@' | ':' | '.' | '_' | '-' | '=' | '/')
+        }) && !out.iter().any(|v| v == trimmed)
+        {
+            out.push(trimmed.to_string());
+        }
+    }
+    out
+}
+
+fn matrix_message_payload_for_text(chunk: &str) -> Value {
+    let user_ids = extract_matrix_user_ids(chunk);
+    if user_ids.is_empty() {
+        return serde_json::json!({
+            "msgtype": "m.text",
+            "body": chunk,
+        });
+    }
+
+    let mut formatted = html_escape(chunk);
+    for uid in &user_ids {
+        let escaped_uid = html_escape(uid);
+        let href = format!("https://matrix.to/#/{}", uid);
+        let pill = format!("<a href=\"{}\">{}</a>", html_escape(&href), escaped_uid);
+        formatted = formatted.replace(&escaped_uid, &pill);
+    }
+
+    serde_json::json!({
+        "msgtype": "m.text",
+        "body": chunk,
+        "format": "org.matrix.custom.html",
+        "formatted_body": formatted,
+        "m.mentions": {
+            "user_ids": user_ids,
+        }
+    })
+}
+
+async fn send_matrix_message_payload(
+    client: &reqwest::Client,
+    homeserver_url: &str,
+    access_token: &str,
+    room_id: &str,
+    payload: &Value,
+) -> Result<String, String> {
+    let homeserver = homeserver_url.trim_end_matches('/');
+    let txn_id = uuid::Uuid::new_v4().to_string();
+    let url = format!(
+        "{homeserver}/_matrix/client/v3/rooms/{}/send/m.room.message/{txn_id}",
+        urlencoding::encode(room_id)
+    );
+
+    let response = client
+        .put(&url)
+        .bearer_auth(access_token.trim())
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .json(payload)
+        .send()
+        .await
+        .map_err(|e| format!("Matrix send request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "Matrix send failed: HTTP {status} {}",
+            body.chars().take(300).collect::<String>()
+        ));
+    }
+
+    let json: Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Matrix send response parse failed: {e}"))?;
+
+    Ok(json
+        .get("event_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string())
 }
 
 async fn send_matrix_text(
@@ -426,39 +664,248 @@ async fn send_matrix_text(
     room_id: &str,
     text: &str,
 ) -> Result<(), String> {
-    let homeserver = homeserver_url.trim_end_matches('/');
     for chunk in split_text(text, 3800) {
-        let txn_id = uuid::Uuid::new_v4().to_string();
-        let url = format!(
-            "{homeserver}/_matrix/client/v3/rooms/{}/send/m.room.message/{txn_id}",
-            urlencoding::encode(room_id)
-        );
-
-        let body = serde_json::json!({
-            "msgtype": "m.text",
-            "body": chunk,
-        });
-
-        let response = client
-            .put(&url)
-            .bearer_auth(access_token.trim())
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("Matrix send request failed: {e}"))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(format!(
-                "Matrix send failed: HTTP {status} {}",
-                body.chars().take(300).collect::<String>()
-            ));
-        }
+        let payload = matrix_message_payload_for_text(&chunk);
+        let _ =
+            send_matrix_message_payload(client, homeserver_url, access_token, room_id, &payload)
+                .await?;
     }
 
     Ok(())
+}
+
+fn guess_mime_from_extension(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|v| v.to_str())
+        .map(|v| v.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("pdf") => "application/pdf",
+        Some("txt") => "text/plain",
+        Some("json") => "application/json",
+        Some("md") => "text/markdown",
+        Some("zip") => "application/zip",
+        Some("mp3") => "audio/mpeg",
+        Some("wav") => "audio/wav",
+        Some("ogg") => "audio/ogg",
+        Some("mp4") => "video/mp4",
+        Some("mov") => "video/quicktime",
+        _ => "application/octet-stream",
+    }
+}
+
+fn matrix_msgtype_for_mime(mime: &str) -> &'static str {
+    if mime.starts_with("image/") {
+        "m.image"
+    } else if mime.starts_with("audio/") {
+        "m.audio"
+    } else if mime.starts_with("video/") {
+        "m.video"
+    } else {
+        "m.file"
+    }
+}
+
+async fn send_matrix_attachment(
+    client: &reqwest::Client,
+    homeserver_url: &str,
+    access_token: &str,
+    room_id: &str,
+    file_path: &Path,
+    caption: Option<&str>,
+) -> Result<String, String> {
+    let bytes = tokio::fs::read(file_path)
+        .await
+        .map_err(|e| format!("Failed to read attachment file: {e}"))?;
+    let file_name = file_path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("attachment.bin")
+        .to_string();
+
+    let mime = guess_mime_from_extension(file_path);
+    let homeserver = homeserver_url.trim_end_matches('/');
+    let upload_url = format!(
+        "{homeserver}/_matrix/media/v3/upload?filename={}",
+        urlencoding::encode(&file_name)
+    );
+
+    let upload_response = client
+        .post(&upload_url)
+        .bearer_auth(access_token.trim())
+        .header(reqwest::header::CONTENT_TYPE, mime)
+        .body(bytes.clone())
+        .send()
+        .await
+        .map_err(|e| format!("Matrix media upload failed: {e}"))?;
+
+    if !upload_response.status().is_success() {
+        let status = upload_response.status();
+        let body = upload_response.text().await.unwrap_or_default();
+        return Err(format!(
+            "Matrix media upload failed: HTTP {status} {}",
+            body.chars().take(300).collect::<String>()
+        ));
+    }
+
+    let upload_json: Value = upload_response
+        .json()
+        .await
+        .map_err(|e| format!("Matrix media upload parse failed: {e}"))?;
+
+    let Some(content_uri) = upload_json.get("content_uri").and_then(|v| v.as_str()) else {
+        return Err("Matrix media upload missing content_uri".to_string());
+    };
+
+    let msgtype = matrix_msgtype_for_mime(mime);
+    let mut payload = serde_json::json!({
+        "msgtype": msgtype,
+        "body": file_name,
+        "filename": file_name,
+        "url": content_uri,
+        "info": {
+            "mimetype": mime,
+            "size": bytes.len(),
+        }
+    });
+
+    if let Some(c) = caption.map(str::trim).filter(|v| !v.is_empty()) {
+        payload["body"] = Value::String(format!("{} ({})", file_path.display(), c));
+    }
+
+    let _ = send_matrix_message_payload(client, homeserver_url, access_token, room_id, &payload)
+        .await?;
+
+    if let Some(c) = caption.map(str::trim).filter(|v| !v.is_empty()) {
+        send_matrix_text(client, homeserver_url, access_token, room_id, c).await?;
+    }
+
+    Ok(match caption {
+        Some(c) => format!("[attachment:{}] {}", file_path.display(), c),
+        None => format!("[attachment:{}]", file_path.display()),
+    })
+}
+
+fn looks_like_reaction_token(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.contains(char::is_whitespace) {
+        return None;
+    }
+    if trimmed.len() > 24 {
+        return None;
+    }
+    if trimmed.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+async fn send_matrix_reaction(
+    client: &reqwest::Client,
+    homeserver_url: &str,
+    access_token: &str,
+    room_id: &str,
+    target_event_id: &str,
+    key: &str,
+) -> Result<(), String> {
+    let homeserver = homeserver_url.trim_end_matches('/');
+    let txn_id = uuid::Uuid::new_v4().to_string();
+    let url = format!(
+        "{homeserver}/_matrix/client/v3/rooms/{}/send/m.reaction/{txn_id}",
+        urlencoding::encode(room_id)
+    );
+
+    let payload = serde_json::json!({
+        "m.relates_to": {
+            "rel_type": "m.annotation",
+            "event_id": target_event_id,
+            "key": key,
+        }
+    });
+
+    let response = client
+        .put(&url)
+        .bearer_auth(access_token.trim())
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Matrix reaction send failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "Matrix reaction send failed: HTTP {status} {}",
+            body.chars().take(300).collect::<String>()
+        ));
+    }
+
+    Ok(())
+}
+
+struct MatrixIncomingMessage {
+    room_id: String,
+    sender: String,
+    event_id: String,
+    body: String,
+    mentioned_bot: bool,
+}
+
+async fn resolve_matrix_chat_id(
+    app_state: Arc<AppState>,
+    runtime: &MatrixRuntimeContext,
+    room_id: &str,
+) -> i64 {
+    call_blocking(app_state.db.clone(), {
+        let room = room_id.to_string();
+        let title = format!("matrix-{}", room_id);
+        let chat_type = "matrix".to_string();
+        let channel_name = runtime.channel_name.clone();
+        move |db| db.resolve_or_create_chat_id(&channel_name, &room, Some(&title), &chat_type)
+    })
+    .await
+    .unwrap_or(0)
+}
+
+async fn handle_matrix_reaction(
+    app_state: Arc<AppState>,
+    runtime: MatrixRuntimeContext,
+    room_id: String,
+    sender: String,
+    event_id: String,
+    relates_to_event_id: String,
+    key: String,
+) {
+    let chat_id = resolve_matrix_chat_id(app_state.clone(), &runtime, &room_id).await;
+    if chat_id == 0 {
+        error!("Matrix: failed to resolve chat ID for room {}", room_id);
+        return;
+    }
+
+    let reaction_text = format!(
+        "[reaction] {} reacted {} to {}",
+        sender, key, relates_to_event_id
+    );
+    let incoming = StoredMessage {
+        id: if event_id.trim().is_empty() {
+            uuid::Uuid::new_v4().to_string()
+        } else {
+            event_id
+        },
+        chat_id,
+        sender_name: sender,
+        content: reaction_text,
+        is_from_bot: false,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    let _ = call_blocking(app_state.db.clone(), move |db| db.store_message(&incoming)).await;
 }
 
 async fn handle_matrix_message(
@@ -466,24 +913,18 @@ async fn handle_matrix_message(
     runtime: MatrixRuntimeContext,
     msg: MatrixIncomingMessage,
 ) {
-    if !runtime.should_respond(&msg.body) {
+    if !runtime.should_respond(&msg.body, msg.mentioned_bot) {
         return;
     }
 
-    let chat_id = call_blocking(app_state.db.clone(), {
-        let room_id = msg.room_id.clone();
-        let title = format!("matrix-{}", room_id);
-        let chat_type = "matrix".to_string();
-        let channel_name = runtime.channel_name.clone();
-        move |db| db.resolve_or_create_chat_id(&channel_name, &room_id, Some(&title), &chat_type)
-    })
-    .await
-    .unwrap_or(0);
+    let chat_id = resolve_matrix_chat_id(app_state.clone(), &runtime, &msg.room_id).await;
 
     if chat_id == 0 {
         error!("Matrix: failed to resolve chat ID for room {}", msg.room_id);
         return;
     }
+
+    let client = reqwest::Client::new();
 
     let incoming = StoredMessage {
         id: if msg.event_id.trim().is_empty() {
@@ -506,7 +947,7 @@ async fn handle_matrix_message(
         })
         .await;
         let _ = send_matrix_text(
-            &reqwest::Client::new(),
+            &client,
             &runtime.homeserver_url,
             &runtime.access_token,
             &msg.room_id,
@@ -519,7 +960,7 @@ async fn handle_matrix_message(
     if trimmed == "/skills" {
         let formatted = app_state.skills.list_skills_formatted();
         let _ = send_matrix_text(
-            &reqwest::Client::new(),
+            &client,
             &runtime.homeserver_url,
             &runtime.access_token,
             &msg.room_id,
@@ -533,7 +974,7 @@ async fn handle_matrix_message(
         let reloaded = app_state.skills.reload();
         let text = format!("Reloaded {} skills from disk.", reloaded.len());
         let _ = send_matrix_text(
-            &reqwest::Client::new(),
+            &client,
             &runtime.homeserver_url,
             &runtime.access_token,
             &msg.room_id,
@@ -550,7 +991,7 @@ async fn handle_matrix_message(
             let messages: Vec<LlmMessage> = serde_json::from_str(&json).unwrap_or_default();
             if messages.is_empty() {
                 let _ = send_matrix_text(
-                    &reqwest::Client::new(),
+                    &client,
                     &runtime.homeserver_url,
                     &runtime.access_token,
                     &msg.room_id,
@@ -565,7 +1006,7 @@ async fn handle_matrix_message(
                     &messages,
                 );
                 let _ = send_matrix_text(
-                    &reqwest::Client::new(),
+                    &client,
                     &runtime.homeserver_url,
                     &runtime.access_token,
                     &msg.room_id,
@@ -575,7 +1016,7 @@ async fn handle_matrix_message(
             }
         } else {
             let _ = send_matrix_text(
-                &reqwest::Client::new(),
+                &client,
                 &runtime.homeserver_url,
                 &runtime.access_token,
                 &msg.room_id,
@@ -590,7 +1031,7 @@ async fn handle_matrix_message(
         match build_usage_report(app_state.db.clone(), chat_id).await {
             Ok(report) => {
                 let _ = send_matrix_text(
-                    &reqwest::Client::new(),
+                    &client,
                     &runtime.homeserver_url,
                     &runtime.access_token,
                     &msg.room_id,
@@ -600,7 +1041,7 @@ async fn handle_matrix_message(
             }
             Err(e) => {
                 let _ = send_matrix_text(
-                    &reqwest::Client::new(),
+                    &client,
                     &runtime.homeserver_url,
                     &runtime.access_token,
                     &msg.room_id,
@@ -646,8 +1087,39 @@ async fn handle_matrix_message(
             }
 
             if !response.is_empty() {
+                if let Some(reaction_key) = looks_like_reaction_token(&response) {
+                    if !msg.event_id.trim().is_empty() {
+                        if let Err(e) = send_matrix_reaction(
+                            &client,
+                            &runtime.homeserver_url,
+                            &runtime.access_token,
+                            &msg.room_id,
+                            &msg.event_id,
+                            &reaction_key,
+                        )
+                        .await
+                        {
+                            error!("Matrix: failed to send reaction: {e}");
+                        } else {
+                            let bot_msg = StoredMessage {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                chat_id,
+                                sender_name: runtime.bot_username.clone(),
+                                content: format!("[reaction] {}", reaction_key),
+                                is_from_bot: true,
+                                timestamp: chrono::Utc::now().to_rfc3339(),
+                            };
+                            let _ = call_blocking(app_state.db.clone(), move |db| {
+                                db.store_message(&bot_msg)
+                            })
+                            .await;
+                            return;
+                        }
+                    }
+                }
+
                 if let Err(e) = send_matrix_text(
-                    &reqwest::Client::new(),
+                    &client,
                     &runtime.homeserver_url,
                     &runtime.access_token,
                     &msg.room_id,
@@ -672,7 +1144,7 @@ async fn handle_matrix_message(
                 let fallback =
                     "I couldn't produce a visible reply after an automatic retry. Please try again.";
                 let _ = send_matrix_text(
-                    &reqwest::Client::new(),
+                    &client,
                     &runtime.homeserver_url,
                     &runtime.access_token,
                     &msg.room_id,
@@ -695,7 +1167,7 @@ async fn handle_matrix_message(
         Err(e) => {
             error!("Error processing Matrix message: {e}");
             let _ = send_matrix_text(
-                &reqwest::Client::new(),
+                &client,
                 &runtime.homeserver_url,
                 &runtime.access_token,
                 &msg.room_id,
@@ -703,5 +1175,68 @@ async fn handle_matrix_message(
             )
             .await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        extract_matrix_user_ids, looks_like_reaction_token, matrix_message_payload_for_text,
+        normalize_matrix_message_body, MatrixRuntimeContext,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn test_extract_matrix_user_ids() {
+        let ids = extract_matrix_user_ids("ping @alice:example.org and @bob:matrix.org.");
+        assert_eq!(ids, vec!["@alice:example.org", "@bob:matrix.org"]);
+    }
+
+    #[test]
+    fn test_message_payload_mentions() {
+        let payload = matrix_message_payload_for_text("hello @alice:example.org");
+        let mentions = payload
+            .pointer("/m.mentions/user_ids")
+            .and_then(|v| v.as_array())
+            .expect("mentions user_ids");
+        assert_eq!(mentions.len(), 1);
+        assert_eq!(mentions[0].as_str(), Some("@alice:example.org"));
+    }
+
+    #[test]
+    fn test_reaction_token_detection() {
+        assert_eq!(looks_like_reaction_token("👍"), Some("👍".to_string()));
+        assert_eq!(looks_like_reaction_token("thanks"), None);
+    }
+
+    #[test]
+    fn test_normalize_attachment_body() {
+        let event = json!({
+            "content": {
+                "msgtype": "m.image",
+                "body": "photo.png",
+                "url": "mxc://localhost/abc"
+            }
+        });
+        let body = normalize_matrix_message_body(&event);
+        assert!(body.contains("[attachment:m.image]"));
+        assert!(body.contains("mxc://localhost/abc"));
+    }
+
+    #[test]
+    fn test_should_respond_when_mentioned_metadata() {
+        let runtime = MatrixRuntimeContext {
+            channel_name: "matrix".to_string(),
+            access_token: "tok".to_string(),
+            homeserver_url: "http://localhost:8008".to_string(),
+            bot_user_id: "@bot:localhost".to_string(),
+            bot_username: "bot".to_string(),
+            allowed_room_ids: Vec::new(),
+            mention_required: true,
+            sync_timeout_ms: 30_000,
+        };
+
+        assert!(runtime.should_respond("hello there", true));
+        assert!(!runtime.should_respond("hello there", false));
     }
 }
