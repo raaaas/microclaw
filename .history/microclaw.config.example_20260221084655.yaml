@@ -1,0 +1,147 @@
+# MicroClaw configuration
+# Copy this file to microclaw.config.yaml and fill in the required values.
+
+
+# LLM provider (anthropic, openai-codex, ollama, openai, openrouter, deepseek, google, etc.)
+llm_provider: "anthropic"
+# API key for LLM provider (optional for ollama; openai-codex supports OAuth or api_key)
+api_key: ""
+# Model name (leave empty for provider default)
+model: ""
+# Optional token pricing table for /usage cost estimation.
+# Prices are USD per 1M tokens, matched by exact model name.
+# Add a "*" row as fallback for unknown models if desired.
+# model_prices:
+#   - model: "claude-sonnet-4-5-20250929"
+#     input_per_million_usd: 3.0
+#     output_per_million_usd: 15.0
+#   - model: "*"
+#     input_per_million_usd: 0.0
+#     output_per_million_usd: 0.0
+# Custom base URL (optional, null to use provider default)
+# llm_base_url: null
+
+# Max tokens per response
+max_tokens: 8192
+# Max tool loop iterations per message
+max_tool_iterations: 100
+# Chat history context size
+max_history_messages: 50
+# Maximum inbound Telegram document size in MB
+max_document_size_mb: 100
+# Estimated token budget for injecting structured memories into system prompt
+memory_token_budget: 1500
+# Optional embedding runtime config (requires binary built with --features sqlite-vec)
+# embedding_provider: "openai"   # openai | ollama
+# embedding_api_key: ""
+# embedding_base_url: ""
+# embedding_model: "text-embedding-3-small"
+# embedding_dim: 1536
+# Data root directory:
+# - runtime files go to <data_dir>/runtime
+# - built-in/custom skills are loaded from <data_dir>/skills
+data_dir: "./microclaw.data"
+# Default working directory for file/bash/search tools.
+# Relative paths used by tools are resolved from this directory.
+working_dir: "./tmp"
+# Working-dir isolation mode for bash/read_file/write_file/edit_file/glob/grep:
+# - "shared": uses working_dir/shared
+# - "chat": each chat uses working_dir/chat/<channel>/<chat_id>
+working_dir_isolation: "chat"
+# IANA timezone for scheduling (e.g. "US/Eastern", "Europe/London")
+timezone: "UTC"
+
+# OpenAI API key for voice transcription via Whisper (optional)
+# openai_api_key: ""
+
+# Voice / Speech-to-text configuration
+# voice_provider: "openai"  # "openai" uses OpenAI Whisper API (requires openai_api_key)
+                          # "local" uses voice_transcription_command
+# voice_transcription_command: "whisper-mlx --file {file}"  # Command template for local transcription
+                                                               # Use {file} placeholder for the audio file path
+
+# Session management
+max_session_messages: 40
+compact_keep_recent: 20
+
+# Control chats can operate across chats (send_message/schedule/memory global/export/todo).
+# Non-control chats are restricted to their own chat_id.
+# control_chat_ids: []
+
+# WhatsApp Cloud API (optional)
+# whatsapp_access_token: ""
+# whatsapp_phone_number_id: ""
+# whatsapp_verify_token: ""
+# whatsapp_webhook_port: 8080
+
+channels:
+  web:
+    enabled: true
+  telegram:
+    enabled: false
+    bot_token: ""
+    bot_username: ""
+    # Telegram group allowlist (empty = allow all groups)
+    # allowed_groups: []
+    # Telegram DM allowlist by sender user_id (empty = allow all users in private chats)
+    # allowed_user_ids: [123456789]
+    # Multi-account example:
+    # default_account: "main"
+    # accounts:
+    #   main:
+    #     enabled: true
+    #     bot_token: "123456:ABC-DEF..."
+    #     bot_username: "my_bot"
+    #     allowed_user_ids: [123456789]
+  discord:
+    enabled: false
+    bot_token: ""
+    # allowed_channels: []
+  # slack:
+  #   enabled: false
+  #   bot_token: "xoxb-..."
+  #   app_token: "xapp-..."
+  #   allowed_channels: []
+  # feishu:
+  #   enabled: false
+  #   app_id: "cli_xxx"
+  #   app_secret: "xxx"
+  #   connection_mode: "websocket"   # "websocket" (default) or "webhook"
+  #   domain: "feishu"               # "feishu" (China), "lark" (international), or custom URL
+  #   allowed_chats: []
+  #   # Webhook-only settings:
+  #   # webhook_path: "/feishu/events"
+  #   # verification_token: ""
+  #   # encrypt_key: ""
+
+# Local web UI (optional)
+# Channel on/off is controlled by `channels.web.enabled`.
+# Bind address for local web UI
+web_host: "127.0.0.1"
+# Port for local web UI
+web_port: 10961
+# Optional bearer token for Web API/UI.
+# If set, requests must send Authorization: Bearer <token>
+# web_auth_token: ""
+# Max in-flight requests per session
+web_max_inflight_per_session: 2
+# Max requests allowed per session in rate window
+web_max_requests_per_window: 8
+# Rate limit window length (seconds)
+web_rate_window_seconds: 10
+# Buffered SSE event history per run for replay
+web_run_history_limit: 512
+# Idle cleanup TTL for web session quota/locks (seconds)
+web_session_idle_ttl_seconds: 300
+
+# Legacy flat channel fields (backward compatibility only; prefer `channels:` above):
+# telegram_bot_token: ""
+# bot_username: ""
+# discord_bot_token: null
+# discord_allowed_channels: []
+# web_enabled: true
+
+# Soul file: defines your bot's personality, voice, values, and behavior.
+# Supports markdown format. If not set, checks data_dir/SOUL.md then ./SOUL.md.
+# Per-chat overrides: place SOUL.md in <data_dir>/runtime/groups/<chat_id>/SOUL.md
+# soul_path: "./SOUL.md"
