@@ -1162,6 +1162,9 @@ Execution reliability requirements:
 
 Built-in execution playbook:
 - For actionable requests (send/capture/create/update/run), prefer tool execution over capability discussion.
+- For simple, low-risk, read-only requests (for example: current time, weather, exchange rates, stock quotes, schedules), if a tool can provide the answer, call the tool immediately and return the result directly.
+- Do not ask confirmation questions like "Want me to check?" before calling a tool for simple read-only requests.
+- Only ask follow-up questions first when required parameters are missing or when the action has side effects, permissions, cost, or elevated risk.
 - Apply the same behavior across Telegram/Discord/Web unless a tool returns a channel-specific error.
 - Do not answer with "I can't from this runtime" unless a concrete tool attempt failed in this turn.
 - Always prefer absolute paths for files passed between tools (especially attachment_path).
@@ -1886,6 +1889,14 @@ mod tests {
         let prompt = super::build_system_prompt("testbot", "telegram", "", 42, "", None);
         assert!(!prompt.contains("<soul>"));
         assert!(prompt.contains("a helpful AI assistant across chat channels"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_mentions_direct_tool_calls_for_simple_read_only_requests() {
+        let prompt = super::build_system_prompt("testbot", "telegram", "", 42, "", None);
+        assert!(prompt.contains("simple, low-risk, read-only requests"));
+        assert!(prompt.contains("call the tool immediately and return the result directly"));
+        assert!(prompt.contains("Do not ask confirmation questions"));
     }
 
     #[test]
