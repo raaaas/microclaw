@@ -1,3 +1,4 @@
+pub mod commands;
 pub mod discord;
 pub mod feishu;
 pub mod irc;
