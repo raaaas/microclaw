@@ -1882,7 +1882,7 @@ mod tests {
     #[test]
     fn test_check_private_chat_access() {
         let allowed_ids = vec![123, 456];
-        
+
         // Private chat, allowed user -> Pass
         assert!(check_private_chat_access(
             "telegram_private",
