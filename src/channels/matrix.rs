@@ -436,17 +436,15 @@ pub async fn start_matrix_bot(app_state: Arc<AppState>, runtime: MatrixRuntimeCo
                                 relates_to_event_id,
                                 key,
                             } => {
-                                handle_matrix_reaction(
-                                    state,
-                                    runtime_ctx,
+                                let reaction = MatrixIncomingReaction {
                                     room_id,
                                     is_direct,
                                     sender,
                                     event_id,
                                     relates_to_event_id,
                                     key,
-                                )
-                                .await;
+                                };
+                                handle_matrix_reaction(state, runtime_ctx, reaction).await;
                             }
                         }
                     });
@@ -777,17 +775,15 @@ async fn start_matrix_e2ee_sync(app_state: Arc<AppState>, runtime: MatrixRuntime
             if is_direct && !runtime.should_process_dm_sender(ev.sender.as_str()) {
                 return;
             }
-            handle_matrix_reaction(
-                app_state,
-                runtime,
+            let reaction = MatrixIncomingReaction {
                 room_id,
                 is_direct,
-                ev.sender.to_string(),
-                ev.event_id.to_string(),
-                ev.content.relates_to.event_id.to_string(),
-                ev.content.relates_to.key.clone(),
-            )
-            .await;
+                sender: ev.sender.to_string(),
+                event_id: ev.event_id.to_string(),
+                relates_to_event_id: ev.content.relates_to.event_id.to_string(),
+                key: ev.content.relates_to.key.clone(),
+            };
+            handle_matrix_reaction(app_state, runtime, reaction).await;
         }
     });
 
@@ -1555,6 +1551,15 @@ struct MatrixIncomingMessage {
     prefer_sdk_send: bool,
 }
 
+struct MatrixIncomingReaction {
+    room_id: String,
+    is_direct: bool,
+    sender: String,
+    event_id: String,
+    relates_to_event_id: String,
+    key: String,
+}
+
 async fn resolve_matrix_chat_id(
     app_state: Arc<AppState>,
     runtime: &MatrixRuntimeContext,
@@ -1579,31 +1584,35 @@ async fn resolve_matrix_chat_id(
 async fn handle_matrix_reaction(
     app_state: Arc<AppState>,
     runtime: MatrixRuntimeContext,
-    room_id: String,
-    is_direct: bool,
-    sender: String,
-    event_id: String,
-    relates_to_event_id: String,
-    key: String,
+    reaction: MatrixIncomingReaction,
 ) {
-    let chat_id = resolve_matrix_chat_id(app_state.clone(), &runtime, &room_id, is_direct).await;
+    let chat_id = resolve_matrix_chat_id(
+        app_state.clone(),
+        &runtime,
+        &reaction.room_id,
+        reaction.is_direct,
+    )
+    .await;
     if chat_id == 0 {
-        error!("Matrix: failed to resolve chat ID for room {}", room_id);
+        error!(
+            "Matrix: failed to resolve chat ID for room {}",
+            reaction.room_id
+        );
         return;
     }
 
     let reaction_text = format!(
         "[reaction] {} reacted {} to {}",
-        sender, key, relates_to_event_id
+        reaction.sender, reaction.key, reaction.relates_to_event_id
     );
     let incoming = StoredMessage {
-        id: if event_id.trim().is_empty() {
+        id: if reaction.event_id.trim().is_empty() {
             uuid::Uuid::new_v4().to_string()
         } else {
-            event_id
+            reaction.event_id
         },
         chat_id,
-        sender_name: sender,
+        sender_name: reaction.sender,
         content: reaction_text,
         is_from_bot: false,
         timestamp: chrono::Utc::now().to_rfc3339(),
