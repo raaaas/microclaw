@@ -571,10 +571,21 @@ fn parse_hook_md(hook_md_path: &Path, dir: &Path) -> Option<HookDef> {
 }
 
 pub async fn handle_hooks_cli(args: &[String]) -> Result<()> {
-    let cli = HooksCli::try_parse_from(
+    let cli = match HooksCli::try_parse_from(
         std::iter::once("hooks").chain(args.iter().map(std::string::String::as_str)),
-    )
-    .map_err(|e| anyhow!(e.to_string()))?;
+    ) {
+        Ok(cli) => cli,
+        Err(err)
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            err.print()?;
+            return Ok(());
+        }
+        Err(err) => return Err(anyhow!(err.to_string())),
+    };
     let cmd = cli.command.unwrap_or(HooksCommand::List);
     let config = Config::load()?;
     let mgr = HookManager::from_config(&config);

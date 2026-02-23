@@ -31,10 +31,22 @@ where
 }
 
 pub async fn handle_skill_cli(args: &[String], config: &Config) -> Result<(), MicroClawError> {
-    let cli = SkillCli::try_parse_from(
+    let cli = match SkillCli::try_parse_from(
         std::iter::once("skill").chain(args.iter().map(std::string::String::as_str)),
-    )
-    .map_err(|e| MicroClawError::Config(e.to_string()))?;
+    ) {
+        Ok(cli) => cli,
+        Err(err)
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            err.print()
+                .map_err(|e| MicroClawError::Config(e.to_string()))?;
+            return Ok(());
+        }
+        Err(err) => return Err(MicroClawError::Config(err.to_string())),
+    };
     let subcommand = cli.command;
 
     let gateway: Arc<dyn ClawHubGateway> = Arc::new(RegistryClawHubGateway::from_config(config));

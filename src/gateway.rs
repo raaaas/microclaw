@@ -54,10 +54,21 @@ struct LinuxRuntimeStatus {
 }
 
 pub fn handle_gateway_cli(args: &[String]) -> Result<()> {
-    let cli = GatewayCli::try_parse_from(
+    let cli = match GatewayCli::try_parse_from(
         std::iter::once("gateway").chain(args.iter().map(std::string::String::as_str)),
-    )
-    .map_err(|e| anyhow!(e.to_string()))?;
+    ) {
+        Ok(cli) => cli,
+        Err(err)
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            err.print()?;
+            return Ok(());
+        }
+        Err(err) => return Err(anyhow!(err.to_string())),
+    };
     let Some(action) = cli.action else {
         print_gateway_help();
         return Ok(());

@@ -118,10 +118,21 @@ enum DoctorCommand {
 }
 
 pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
-    let cli = DoctorCli::try_parse_from(
+    let cli = match DoctorCli::try_parse_from(
         std::iter::once("doctor").chain(args.iter().map(std::string::String::as_str)),
-    )
-    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    ) {
+        Ok(cli) => cli,
+        Err(err)
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            err.print()?;
+            return Ok(());
+        }
+        Err(err) => return Err(anyhow::anyhow!(err.to_string())),
+    };
     let json_output = cli.json;
     let sandbox_only = matches!(cli.command, Some(DoctorCommand::Sandbox));
 
