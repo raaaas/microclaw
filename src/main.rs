@@ -1,10 +1,10 @@
+use argon2::password_hash::{rand_core::OsRng, PasswordHashString, SaltString};
+use argon2::{Argon2, PasswordHasher};
 use microclaw::config::Config;
 use microclaw::error::MicroClawError;
 use microclaw::{
     builtin_skills, db, doctor, gateway, hooks, logging, mcp, memory, runtime, setup, skills,
 };
-use argon2::password_hash::{rand_core::OsRng, PasswordHashString, SaltString};
-use argon2::{Argon2, PasswordHasher};
 use std::path::{Path, PathBuf};
 use tracing::info;
 

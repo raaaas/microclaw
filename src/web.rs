@@ -1613,8 +1613,10 @@ pub async fn start_web_server(state: Arc<AppState>) {
         .is_some();
     if state.config.web_auth_token.is_none() && !has_password {
         let default_hash = make_password_hash(DEFAULT_WEB_PASSWORD);
-        let _ = call_blocking(state.db.clone(), move |db| db.upsert_auth_password_hash(&default_hash))
-            .await;
+        let _ = call_blocking(state.db.clone(), move |db| {
+            db.upsert_auth_password_hash(&default_hash)
+        })
+        .await;
         warn!(
             "web auth default password enabled: no operator password was configured. Temporary password is '{}'. Please change it in Web UI after sign in.",
             DEFAULT_WEB_PASSWORD
