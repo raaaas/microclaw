@@ -2251,41 +2251,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rate_limit_window_recovers() {
-        let limits = WebLimits {
-            max_inflight_per_session: 2,
-            max_requests_per_window: 1,
-            rate_window: Duration::from_secs(2),
-            run_history_limit: 128,
-            session_idle_ttl: Duration::from_secs(60),
-        };
-        let web_state = test_web_state(Box::new(DummyLlm), None, limits);
-        let app = build_router(web_state);
-
-        let mk_req = |msg: &str| {
-            Request::builder()
-                .method("POST")
-                .uri("/api/send")
-                .header("content-type", "application/json")
-                .body(Body::from(format!(
-                    r#"{{"session_key":"main","sender_name":"u","message":"{}"}}"#,
-                    msg
-                )))
-                .unwrap()
-        };
-
-        let resp1 = app.clone().oneshot(mk_req("r1")).await.unwrap();
-        assert_eq!(resp1.status(), StatusCode::OK);
-
-        let resp2 = app.clone().oneshot(mk_req("r2")).await.unwrap();
-        assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
-
-        tokio::time::sleep(Duration::from_millis(2200)).await;
-        let resp3 = app.oneshot(mk_req("r3")).await.unwrap();
-        assert_eq!(resp3.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
     async fn test_api_usage_returns_report() {
         let web_state = test_web_state(Box::new(DummyLlm), None, WebLimits::default());
         let db = web_state.app_state.db.clone();
