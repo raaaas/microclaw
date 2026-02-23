@@ -19,6 +19,34 @@ type SessionSidebarProps = {
   onNewSession: () => void
 }
 
+function parseSessionKeyCreatedAt(sessionKey: string): Date | null {
+  const matched = /^session-(\d{14})$/.exec(sessionKey.trim())
+  if (!matched) return null
+  const raw = matched[1]
+  const y = Number(raw.slice(0, 4))
+  const m = Number(raw.slice(4, 6))
+  const d = Number(raw.slice(6, 8))
+  const hh = Number(raw.slice(8, 10))
+  const mm = Number(raw.slice(10, 12))
+  const ss = Number(raw.slice(12, 14))
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null
+  const dt = new Date(y, m - 1, d, hh, mm, ss)
+  if (Number.isNaN(dt.getTime())) return null
+  return dt
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+function formatCreatedLabel(item: SessionItem): string {
+  const createdAt = parseSessionKeyCreatedAt(item.session_key)
+  const fallback = Date.parse(item.last_message_time || '')
+  const date = createdAt || (Number.isFinite(fallback) ? new Date(fallback) : null)
+  if (!date) return 'created --'
+  return `created ${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`
+}
+
 export function SessionSidebar({
   appearance,
   onToggleAppearance,
@@ -196,7 +224,7 @@ export function SessionSidebar({
               Chats
             </Text>
           </div>
-          <div className="flex flex-col gap-1.5 pr-1">
+          <div className="flex flex-col gap-1.5 pr-4">
             {sessionItems.map((item) => (
               <button
                 key={item.session_key}
@@ -209,11 +237,11 @@ export function SessionSidebar({
                 className={
                   selectedSessionKey === item.session_key
                     ? isDark
-                      ? 'flex w-full flex-col items-start rounded-lg border border-[color:var(--mc-accent)] bg-[color:var(--mc-bg-panel)] px-3 py-2 text-left shadow-sm'
-                      : 'flex w-full flex-col items-start rounded-lg border bg-white px-3 py-2 text-left shadow-sm'
+                      ? 'flex w-full max-w-full flex-col items-start rounded-lg border border-[color:var(--mc-accent)] bg-[color:var(--mc-bg-panel)] px-3 py-2 text-left shadow-sm'
+                      : 'flex w-full max-w-full flex-col items-start rounded-lg border bg-white px-3 py-2 text-left shadow-sm'
                     : isDark
-                      ? 'flex w-full flex-col items-start rounded-lg border border-transparent px-3 py-2 text-left text-slate-300 hover:border-[color:var(--mc-border-soft)] hover:bg-[color:var(--mc-bg-panel)]'
-                      : 'flex w-full flex-col items-start rounded-lg border border-transparent px-3 py-2 text-left text-slate-600 hover:border-slate-200 hover:bg-white'
+                      ? 'flex w-full max-w-full flex-col items-start rounded-lg border border-transparent px-3 py-2 text-left text-slate-300 hover:border-[color:var(--mc-border-soft)] hover:bg-[color:var(--mc-bg-panel)]'
+                      : 'flex w-full max-w-full flex-col items-start rounded-lg border border-transparent px-3 py-2 text-left text-slate-600 hover:border-slate-200 hover:bg-white'
                 }
                 style={
                   !isDark && selectedSessionKey === item.session_key
@@ -227,6 +255,9 @@ export function SessionSidebar({
                 <span className="max-w-[220px] truncate text-sm font-medium">{item.label}</span>
                 <span className={isDark ? 'mt-0.5 text-[11px] uppercase tracking-wide text-slate-500' : 'mt-0.5 text-[11px] uppercase tracking-wide text-slate-400'}>
                   {item.chat_type}
+                </span>
+                <span className={isDark ? 'mt-0.5 text-[11px] text-slate-500' : 'mt-0.5 text-[11px] text-slate-400'}>
+                  {formatCreatedLabel(item)}
                 </span>
               </button>
             ))}

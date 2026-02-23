@@ -391,7 +391,7 @@ function pickLatestSessionKey(items: SessionItem[]): string {
     return parsed[0]?.item.session_key || makeSessionKey()
   }
 
-  return items[items.length - 1]?.session_key || makeSessionKey()
+  return items[0]?.session_key || makeSessionKey()
 }
 
 if (typeof document !== 'undefined') {
@@ -891,7 +891,8 @@ function App() {
       }
     }
 
-    if (!map.has(sessionKey) && !sessionKey.startsWith('chat:')) {
+    const selectedMissingFromStoredList = !map.has(sessionKey)
+    if (selectedMissingFromStoredList && !sessionKey.startsWith('chat:')) {
       map.set(sessionKey, {
         session_key: sessionKey,
         label: sessionKey,
@@ -910,7 +911,27 @@ function App() {
       })
     }
 
-    return Array.from(map.values())
+    const items = Array.from(map.values())
+    const selectedSynthetic = selectedMissingFromStoredList && !sessionKey.startsWith('chat:')
+    items.sort((a, b) => {
+      if (selectedSynthetic) {
+        if (a.session_key === sessionKey) return -1
+        if (b.session_key === sessionKey) return 1
+      }
+
+      const ta = Date.parse(a.last_message_time || '')
+      const tb = Date.parse(b.last_message_time || '')
+      const aOk = Number.isFinite(ta)
+      const bOk = Number.isFinite(tb)
+      if (aOk && bOk) {
+        if (tb !== ta) return tb - ta
+      } else if (aOk !== bOk) {
+        return aOk ? -1 : 1
+      }
+
+      return a.label.localeCompare(b.label)
+    })
+    return items
   }, [extraSessions, sessions, sessionKey])
 
   const selectedSession = useMemo(
