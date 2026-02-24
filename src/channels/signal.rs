@@ -345,34 +345,31 @@ async fn signal_webhook_handler(
     if chat_id == 0 {
         return axum::http::StatusCode::INTERNAL_SERVER_ERROR;
     }
-    if !payload.message_id.trim().is_empty() {
-        let already_seen = call_blocking(app_state.db.clone(), {
-            let message_id = payload.message_id.clone();
-            move |db| db.message_exists(chat_id, &message_id)
-        })
-        .await
-        .unwrap_or(false);
-        if already_seen {
-            info!(
-                "Signal: skipping duplicate message chat_id={} message_id={}",
-                chat_id, payload.message_id
-            );
-            return axum::http::StatusCode::OK;
-        }
-    }
+    let inbound_message_id = if payload.message_id.trim().is_empty() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        payload.message_id.clone()
+    };
     let stored = StoredMessage {
-        id: if payload.message_id.trim().is_empty() {
-            uuid::Uuid::new_v4().to_string()
-        } else {
-            payload.message_id.clone()
-        },
+        id: inbound_message_id.clone(),
         chat_id,
         sender_name: sender.to_string(),
         content: text.to_string(),
         is_from_bot: false,
         timestamp: chrono::Utc::now().to_rfc3339(),
     };
-    let _ = call_blocking(app_state.db.clone(), move |db| db.store_message(&stored)).await;
+    let inserted = call_blocking(app_state.db.clone(), move |db| {
+        db.store_message_if_new(&stored)
+    })
+    .await
+    .unwrap_or(false);
+    if !inserted {
+        info!(
+            "Signal: skipping duplicate message chat_id={} message_id={}",
+            chat_id, inbound_message_id
+        );
+        return axum::http::StatusCode::OK;
+    }
     if text.starts_with('/') {
         if let Some(reply) =
             handle_chat_command(&app_state, chat_id, &runtime_ctx.channel_name, text).await

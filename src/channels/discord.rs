@@ -382,6 +382,32 @@ impl EventHandler for Handler {
             )
             .await
             {
+                let title = format!("discord-{external_channel_id}");
+                let _ = call_blocking(self.app_state.db.clone(), move |db| {
+                    db.upsert_chat(channel_id, Some(&title), "discord")
+                })
+                .await;
+                let inbound_message_id = msg.id.get().to_string();
+                let stored = StoredMessage {
+                    id: inbound_message_id.clone(),
+                    chat_id: channel_id,
+                    sender_name: sender_name.clone(),
+                    content: text.clone(),
+                    is_from_bot: false,
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                };
+                let inserted = call_blocking(self.app_state.db.clone(), move |db| {
+                    db.store_message_if_new(&stored)
+                })
+                .await
+                .unwrap_or(false);
+                if !inserted {
+                    info!(
+                        "Discord: skipping duplicate message chat_id={} message_id={}",
+                        channel_id, inbound_message_id
+                    );
+                    return;
+                }
                 let _ = msg.channel_id.say(&ctx.http, reply).await;
                 return;
             }
@@ -394,6 +420,32 @@ impl EventHandler for Handler {
         )
         .await
         {
+            let title = format!("discord-{external_channel_id}");
+            let _ = call_blocking(self.app_state.db.clone(), move |db| {
+                db.upsert_chat(channel_id, Some(&title), "discord")
+            })
+            .await;
+            let inbound_message_id = msg.id.get().to_string();
+            let stored = StoredMessage {
+                id: inbound_message_id.clone(),
+                chat_id: channel_id,
+                sender_name: sender_name.clone(),
+                content: text.clone(),
+                is_from_bot: false,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            };
+            let inserted = call_blocking(self.app_state.db.clone(), move |db| {
+                db.store_message_if_new(&stored)
+            })
+            .await
+            .unwrap_or(false);
+            if !inserted {
+                info!(
+                    "Discord: skipping duplicate message chat_id={} message_id={}",
+                    channel_id, inbound_message_id
+                );
+                return;
+            }
             let _ = msg.channel_id.say(&ctx.http, plugin_response).await;
             return;
         }
@@ -416,32 +468,26 @@ impl EventHandler for Handler {
         .await;
 
         let inbound_message_id = msg.id.get().to_string();
-        let already_seen = call_blocking(self.app_state.db.clone(), {
-            let inbound_message_id = inbound_message_id.clone();
-            move |db| db.message_exists(channel_id, &inbound_message_id)
-        })
-        .await
-        .unwrap_or(false);
-        if already_seen {
-            info!(
-                "Discord: skipping duplicate message chat_id={} message_id={}",
-                channel_id, inbound_message_id
-            );
-            return;
-        }
-
         let stored = StoredMessage {
-            id: inbound_message_id,
+            id: inbound_message_id.clone(),
             chat_id: channel_id,
             sender_name: sender_name.clone(),
             content: text.clone(),
             is_from_bot: false,
             timestamp: chrono::Utc::now().to_rfc3339(),
         };
-        let _ = call_blocking(self.app_state.db.clone(), move |db| {
-            db.store_message(&stored)
+        let inserted = call_blocking(self.app_state.db.clone(), move |db| {
+            db.store_message_if_new(&stored)
         })
-        .await;
+        .await
+        .unwrap_or(false);
+        if !inserted {
+            info!(
+                "Discord: skipping duplicate message chat_id={} message_id={}",
+                channel_id, inbound_message_id
+            );
+            return;
+        }
 
         // Determine if we should respond
         let should_respond = if msg.guild_id.is_some() {

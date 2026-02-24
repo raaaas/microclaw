@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use matrix_sdk::attachment::AttachmentConfig;
@@ -78,6 +77,22 @@ fn default_enabled() -> bool {
 fn matrix_sdk_clients() -> &'static RwLock<HashMap<String, Arc<MatrixSdkClient>>> {
     static CLIENTS: OnceLock<RwLock<HashMap<String, Arc<MatrixSdkClient>>>> = OnceLock::new();
     CLIENTS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn matrix_chat_locks() -> &'static Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn matrix_chat_lock(channel_name: &str, room_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let key = format!("{channel_name}:{room_id}");
+    let Ok(mut guard) = matrix_chat_locks().lock() else {
+        return Arc::new(tokio::sync::Mutex::new(()));
+    };
+    guard
+        .entry(key)
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
 }
 
 fn default_matrix_mention_required() -> bool {
@@ -1622,6 +1637,9 @@ async fn handle_matrix_reaction(
     runtime: MatrixRuntimeContext,
     reaction: MatrixIncomingReaction,
 ) {
+    let chat_lock = matrix_chat_lock(&runtime.channel_name, &reaction.room_id);
+    let _guard = chat_lock.lock().await;
+
     let chat_id = resolve_matrix_chat_id(
         app_state.clone(),
         &runtime,
@@ -1637,39 +1655,34 @@ async fn handle_matrix_reaction(
         return;
     }
 
-    if !reaction.event_id.trim().is_empty() {
-        let already_seen = call_blocking(app_state.db.clone(), {
-            let event_id = reaction.event_id.clone();
-            move |db| db.message_exists(chat_id, &event_id)
-        })
-        .await
-        .unwrap_or(false);
-        if already_seen {
-            info!(
-                "Matrix: skipping duplicate reaction chat_id={} event_id={}",
-                chat_id, reaction.event_id
-            );
-            return;
-        }
-    }
-
+    let inbound_event_id = if reaction.event_id.trim().is_empty() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        reaction.event_id.clone()
+    };
     let reaction_text = format!(
         "[reaction] {} reacted {} to {}",
         reaction.sender, reaction.key, reaction.relates_to_event_id
     );
     let incoming = StoredMessage {
-        id: if reaction.event_id.trim().is_empty() {
-            uuid::Uuid::new_v4().to_string()
-        } else {
-            reaction.event_id
-        },
+        id: inbound_event_id.clone(),
         chat_id,
         sender_name: reaction.sender,
         content: reaction_text,
         is_from_bot: false,
         timestamp: chrono::Utc::now().to_rfc3339(),
     };
-    let _ = call_blocking(app_state.db.clone(), move |db| db.store_message(&incoming)).await;
+    let inserted = call_blocking(app_state.db.clone(), move |db| {
+        db.store_message_if_new(&incoming)
+    })
+    .await
+    .unwrap_or(false);
+    if !inserted {
+        info!(
+            "Matrix: skipping duplicate reaction chat_id={} event_id={}",
+            chat_id, inbound_event_id
+        );
+    }
 }
 
 async fn handle_matrix_message(
@@ -1677,6 +1690,9 @@ async fn handle_matrix_message(
     runtime: MatrixRuntimeContext,
     msg: MatrixIncomingMessage,
 ) {
+    let chat_lock = matrix_chat_lock(&runtime.channel_name, &msg.room_id);
+    let _guard = chat_lock.lock().await;
+
     let chat_id =
         resolve_matrix_chat_id(app_state.clone(), &runtime, &msg.room_id, msg.is_direct).await;
 
@@ -1685,35 +1701,31 @@ async fn handle_matrix_message(
         return;
     }
 
-    if !msg.event_id.trim().is_empty() {
-        let already_seen = call_blocking(app_state.db.clone(), {
-            let event_id = msg.event_id.clone();
-            move |db| db.message_exists(chat_id, &event_id)
-        })
-        .await
-        .unwrap_or(false);
-        if already_seen {
-            info!(
-                "Matrix: skipping duplicate message chat_id={} event_id={}",
-                chat_id, msg.event_id
-            );
-            return;
-        }
-    }
-
+    let inbound_event_id = if msg.event_id.trim().is_empty() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        msg.event_id.clone()
+    };
     let incoming = StoredMessage {
-        id: if msg.event_id.trim().is_empty() {
-            uuid::Uuid::new_v4().to_string()
-        } else {
-            msg.event_id.clone()
-        },
+        id: inbound_event_id.clone(),
         chat_id,
         sender_name: msg.sender.clone(),
         content: msg.body.clone(),
         is_from_bot: false,
         timestamp: chrono::Utc::now().to_rfc3339(),
     };
-    let _ = call_blocking(app_state.db.clone(), move |db| db.store_message(&incoming)).await;
+    let inserted = call_blocking(app_state.db.clone(), move |db| {
+        db.store_message_if_new(&incoming)
+    })
+    .await
+    .unwrap_or(false);
+    if !inserted {
+        info!(
+            "Matrix: skipping duplicate message chat_id={} event_id={}",
+            chat_id, inbound_event_id
+        );
+        return;
+    }
 
     let trimmed = msg.body.trim();
     let should_respond = runtime.should_respond(&msg.body, msg.mentioned_bot, msg.is_direct);
