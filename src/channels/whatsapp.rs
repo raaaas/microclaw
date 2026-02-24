@@ -9,7 +9,7 @@ use tracing::{error, info};
 
 use crate::agent_engine::process_with_agent_with_events;
 use crate::agent_engine::{AgentEvent, AgentRequestContext};
-use crate::chat_commands::handle_chat_command;
+use crate::chat_commands::{handle_chat_command, is_slash_command, unknown_command_response};
 use crate::runtime::AppState;
 use crate::setup_def::{ChannelFieldDef, DynamicChannelDef};
 use microclaw_channels::channel::ConversationKind;
@@ -576,38 +576,8 @@ async fn handle_whatsapp_message(
         return;
     }
 
-    if !message_id.trim().is_empty() {
-        let already_seen = call_blocking(app_state.db.clone(), {
-            let message_id = message_id.to_string();
-            move |db| db.message_exists(chat_id, &message_id)
-        })
-        .await
-        .unwrap_or(false);
-        if already_seen {
-            info!(
-                "WhatsApp: skipping duplicate message chat_id={} message_id={}",
-                chat_id, message_id
-            );
-            return;
-        }
-    }
-
-    let stored = StoredMessage {
-        id: if message_id.trim().is_empty() {
-            uuid::Uuid::new_v4().to_string()
-        } else {
-            message_id.to_string()
-        },
-        chat_id,
-        sender_name: external_chat_id.to_string(),
-        content: text.to_string(),
-        is_from_bot: false,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-    };
-    let _ = call_blocking(app_state.db.clone(), move |db| db.store_message(&stored)).await;
-
     let trimmed = text.trim();
-    if trimmed.starts_with('/') {
+    if is_slash_command(trimmed) {
         if let Some(reply) =
             handle_chat_command(&app_state, chat_id, &runtime.channel_name, trimmed).await
         {
@@ -622,6 +592,42 @@ async fn handle_whatsapp_message(
             .await;
             return;
         }
+        let _ = send_whatsapp_text(
+            &reqwest::Client::new(),
+            &runtime.access_token,
+            &runtime.phone_number_id,
+            &runtime.api_version,
+            external_chat_id,
+            &unknown_command_response(),
+        )
+        .await;
+        return;
+    }
+
+    let inbound_message_id = if message_id.trim().is_empty() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        message_id.to_string()
+    };
+    let stored = StoredMessage {
+        id: inbound_message_id.clone(),
+        chat_id,
+        sender_name: external_chat_id.to_string(),
+        content: text.to_string(),
+        is_from_bot: false,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    let inserted = call_blocking(app_state.db.clone(), move |db| {
+        db.store_message_if_new(&stored)
+    })
+    .await
+    .unwrap_or(false);
+    if !inserted {
+        info!(
+            "WhatsApp: skipping duplicate message chat_id={} message_id={}",
+            chat_id, inbound_message_id
+        );
+        return;
     }
 
     info!(

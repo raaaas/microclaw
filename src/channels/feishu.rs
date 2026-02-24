@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -12,8 +12,8 @@ use tracing::{error, info, warn};
 use crate::agent_engine::process_with_agent_with_events;
 use crate::agent_engine::AgentEvent;
 use crate::agent_engine::AgentRequestContext;
-use crate::chat_commands::handle_chat_command;
 use crate::chat_commands::maybe_handle_plugin_command;
+use crate::chat_commands::{handle_chat_command, is_slash_command, unknown_command_response};
 use crate::runtime::AppState;
 use crate::setup_def::{ChannelFieldDef, DynamicChannelDef};
 use microclaw_channels::channel::ConversationKind;
@@ -251,6 +251,21 @@ async fn maybe_plugin_slash_response(
     channel_name: &str,
 ) -> Option<String> {
     maybe_handle_plugin_command(config, text, chat_id, channel_name).await
+}
+
+static FEISHU_CHAT_LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    OnceLock::new();
+
+fn feishu_chat_lock(channel_name: &str, external_chat_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let key = format!("{channel_name}:{external_chat_id}");
+    let cache = FEISHU_CHAT_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut guard) = cache.lock() else {
+        return Arc::new(tokio::sync::Mutex::new(()));
+    };
+    guard
+        .entry(key)
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -1444,6 +1459,9 @@ async fn handle_feishu_message(
     is_mentioned: bool,
     message_id: &str,
 ) {
+    let chat_lock = feishu_chat_lock(&runtime.channel_name, external_chat_id);
+    let _guard = chat_lock.lock().await;
+
     let chat_type = if is_dm { "feishu_dm" } else { "feishu_group" };
     let title = format!("feishu-{external_chat_id}");
 
@@ -1461,37 +1479,6 @@ async fn handle_feishu_message(
         error!("Feishu: failed to resolve chat ID for {external_chat_id}");
         return;
     }
-
-    if !message_id.is_empty() {
-        let already_seen = call_blocking(app_state.db.clone(), {
-            let message_id = message_id.to_string();
-            move |db| db.message_exists(chat_id, &message_id)
-        })
-        .await
-        .unwrap_or(false);
-        if already_seen {
-            info!(
-                "Feishu: skipping duplicate message chat_id={} message_id={}",
-                chat_id, message_id
-            );
-            return;
-        }
-    }
-
-    // Store incoming message
-    let stored = StoredMessage {
-        id: if message_id.is_empty() {
-            uuid::Uuid::new_v4().to_string()
-        } else {
-            message_id.to_string()
-        },
-        chat_id,
-        sender_name: user.to_string(),
-        content: text.to_string(),
-        is_from_bot: false,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-    };
-    let _ = call_blocking(app_state.db.clone(), move |db| db.store_message(&stored)).await;
 
     // Handle slash commands
     let http_client = reqwest::Client::new();
@@ -1511,7 +1498,7 @@ async fn handle_feishu_message(
     };
 
     let trimmed = text.trim();
-    if trimmed.starts_with('/') {
+    if is_slash_command(trimmed) {
         if let Some(reply) =
             handle_chat_command(&app_state, chat_id, &runtime.channel_name, trimmed).await
         {
@@ -1519,19 +1506,55 @@ async fn handle_feishu_message(
                 .await;
             return;
         }
-    }
-    if let Some(plugin_response) =
-        maybe_plugin_slash_response(&app_state.config, trimmed, chat_id, &runtime.channel_name)
-            .await
-    {
+        if let Some(plugin_response) =
+            maybe_plugin_slash_response(&app_state.config, trimmed, chat_id, &runtime.channel_name)
+                .await
+        {
+            let _ = send_feishu_response(
+                &http_client,
+                base_url,
+                &token,
+                external_chat_id,
+                &plugin_response,
+            )
+            .await;
+            return;
+        }
         let _ = send_feishu_response(
             &http_client,
             base_url,
             &token,
             external_chat_id,
-            &plugin_response,
+            &unknown_command_response(),
         )
         .await;
+        return;
+    }
+
+    // Store incoming non-command message
+    let inbound_message_id = if message_id.is_empty() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        message_id.to_string()
+    };
+    let stored = StoredMessage {
+        id: inbound_message_id.clone(),
+        chat_id,
+        sender_name: user.to_string(),
+        content: text.to_string(),
+        is_from_bot: false,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    let inserted = call_blocking(app_state.db.clone(), move |db| {
+        db.store_message_if_new(&stored)
+    })
+    .await
+    .unwrap_or(false);
+    if !inserted {
+        info!(
+            "Feishu: skipping duplicate message chat_id={} message_id={}",
+            chat_id, inbound_message_id
+        );
         return;
     }
 

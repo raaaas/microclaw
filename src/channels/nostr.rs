@@ -9,7 +9,7 @@ use tracing::{error, info};
 
 use crate::agent_engine::process_with_agent_with_events;
 use crate::agent_engine::{AgentEvent, AgentRequestContext};
-use crate::chat_commands::handle_chat_command;
+use crate::chat_commands::{handle_chat_command, is_slash_command, unknown_command_response};
 use crate::runtime::AppState;
 use crate::setup_def::{ChannelFieldDef, DynamicChannelDef};
 use microclaw_channels::channel::ConversationKind;
@@ -378,37 +378,7 @@ async fn nostr_webhook_handler(
         return axum::http::StatusCode::INTERNAL_SERVER_ERROR;
     }
 
-    if !payload.event_id.trim().is_empty() {
-        let already_seen = call_blocking(app_state.db.clone(), {
-            let event_id = payload.event_id.clone();
-            move |db| db.message_exists(chat_id, &event_id)
-        })
-        .await
-        .unwrap_or(false);
-        if already_seen {
-            info!(
-                "Nostr: skipping duplicate message chat_id={} event_id={}",
-                chat_id, payload.event_id
-            );
-            return axum::http::StatusCode::OK;
-        }
-    }
-
-    let stored = StoredMessage {
-        id: if payload.event_id.trim().is_empty() {
-            uuid::Uuid::new_v4().to_string()
-        } else {
-            payload.event_id.clone()
-        },
-        chat_id,
-        sender_name: pubkey.to_string(),
-        content: content.to_string(),
-        is_from_bot: false,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-    };
-    let _ = call_blocking(app_state.db.clone(), move |db| db.store_message(&stored)).await;
-
-    if content.starts_with('/') {
+    if is_slash_command(content) {
         if let Some(reply) =
             handle_chat_command(&app_state, chat_id, &runtime_ctx.channel_name, content).await
         {
@@ -419,6 +389,37 @@ async fn nostr_webhook_handler(
             let _ = adapter.send_text(pubkey, &reply).await;
             return axum::http::StatusCode::OK;
         }
+        let adapter = NostrAdapter::new(
+            runtime_ctx.channel_name.clone(),
+            runtime_ctx.publish_command.clone(),
+        );
+        let _ = adapter.send_text(pubkey, &unknown_command_response()).await;
+        return axum::http::StatusCode::OK;
+    }
+    let inbound_event_id = if payload.event_id.trim().is_empty() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        payload.event_id.clone()
+    };
+    let stored = StoredMessage {
+        id: inbound_event_id.clone(),
+        chat_id,
+        sender_name: pubkey.to_string(),
+        content: content.to_string(),
+        is_from_bot: false,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    let inserted = call_blocking(app_state.db.clone(), move |db| {
+        db.store_message_if_new(&stored)
+    })
+    .await
+    .unwrap_or(false);
+    if !inserted {
+        info!(
+            "Nostr: skipping duplicate message chat_id={} event_id={}",
+            chat_id, inbound_event_id
+        );
+        return axum::http::StatusCode::OK;
     }
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();

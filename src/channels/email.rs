@@ -10,7 +10,7 @@ use tracing::{error, info};
 
 use crate::agent_engine::process_with_agent_with_events;
 use crate::agent_engine::{AgentEvent, AgentRequestContext};
-use crate::chat_commands::handle_chat_command;
+use crate::chat_commands::{handle_chat_command, is_slash_command, unknown_command_response};
 use crate::runtime::AppState;
 use crate::setup_def::{ChannelFieldDef, DynamicChannelDef};
 use microclaw_channels::channel::ConversationKind;
@@ -437,38 +437,8 @@ async fn email_webhook_handler(
         return axum::http::StatusCode::INTERNAL_SERVER_ERROR;
     }
 
-    if !payload.message_id.trim().is_empty() {
-        let already_seen = call_blocking(app_state.db.clone(), {
-            let message_id = payload.message_id.clone();
-            move |db| db.message_exists(chat_id, &message_id)
-        })
-        .await
-        .unwrap_or(false);
-        if already_seen {
-            info!(
-                "Email: skipping duplicate message chat_id={} message_id={}",
-                chat_id, payload.message_id
-            );
-            return axum::http::StatusCode::OK;
-        }
-    }
-
-    let stored = StoredMessage {
-        id: if payload.message_id.trim().is_empty() {
-            uuid::Uuid::new_v4().to_string()
-        } else {
-            payload.message_id.clone()
-        },
-        chat_id,
-        sender_name: from.to_string(),
-        content: payload.text.clone(),
-        is_from_bot: false,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-    };
-    let _ = call_blocking(app_state.db.clone(), move |db| db.store_message(&stored)).await;
-
     let trimmed = payload.text.trim();
-    if trimmed.starts_with('/') {
+    if is_slash_command(trimmed) {
         if let Some(reply) =
             handle_chat_command(&app_state, chat_id, &runtime_ctx.channel_name, trimmed).await
         {
@@ -486,6 +456,45 @@ async fn email_webhook_handler(
             );
             return axum::http::StatusCode::OK;
         }
+        let target = if payload.reply_to.trim().is_empty() {
+            from.to_string()
+        } else {
+            payload.reply_to.trim().to_string()
+        };
+        let _ = send_email_via_sendmail(
+            &runtime_ctx.sendmail_path,
+            &runtime_ctx.from_address,
+            &target,
+            "MicroClaw command reply",
+            &unknown_command_response(),
+        );
+        return axum::http::StatusCode::OK;
+    }
+
+    let inbound_message_id = if payload.message_id.trim().is_empty() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        payload.message_id.clone()
+    };
+    let stored = StoredMessage {
+        id: inbound_message_id.clone(),
+        chat_id,
+        sender_name: from.to_string(),
+        content: payload.text.clone(),
+        is_from_bot: false,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    let inserted = call_blocking(app_state.db.clone(), move |db| {
+        db.store_message_if_new(&stored)
+    })
+    .await
+    .unwrap_or(false);
+    if !inserted {
+        info!(
+            "Email: skipping duplicate message chat_id={} message_id={}",
+            chat_id, inbound_message_id
+        );
+        return axum::http::StatusCode::OK;
     }
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
